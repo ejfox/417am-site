@@ -180,7 +180,7 @@ function galleryPage(entries: ArtEntry[]): string {
     "417am.party",
     `<header>
       <h1>417am.party</h1>
-      <p>generative art, since 2017 &middot; originally @417am1975 &middot; <a href="/upload">post</a></p>
+      <p>generative art, since 2017 &middot; originally <a href="https://x.com/417am1975">@417am1975</a></p>
     </header>
     <div class="grid">${items}</div>`,
   );
