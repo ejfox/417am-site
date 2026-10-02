@@ -1,0 +1,26 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy and reload
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -e
+            cd /data2/417am-site
+            git fetch origin main
+            git reset --hard origin/main
+            pm2 restart 417am
+            sleep 2
+            curl -sf http://localhost:8417/ > /dev/null && echo "OK: 417am responding" || (echo "FAIL: 417am not responding after deploy" && exit 1)
