@@ -496,8 +496,8 @@ const xml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[c]!));
 
 function itemHtml(e: Numbered): string {
-  const style = e.kind === "studio" ? ` style="image-rendering: pixelated"` : "";
-  return `<p><a href="${SITE}/p/${e.slug}"><img src="${xml(shareUrl(e))}" alt="417am no. ${pad(e.no)}, ${e.kind}, ${localDay(e.date)}"${style}></a></p>`;
+  // No inline style: readers strip it and the W3C validator flags it. Studio stays a PNG.
+  return `<p><a href="${SITE}/p/${e.slug}"><img src="${xml(shareUrl(e))}" alt="417am no. ${pad(e.no)}, ${e.kind}, ${localDay(e.date)}"></a></p>`;
 }
 
 const itemTitle = (e: Numbered) => `no. ${pad(e.no)} · ${GLYPH[e.kind]} ${e.kind} · ${localDay(e.date)}`;
