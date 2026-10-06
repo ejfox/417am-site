@@ -40,8 +40,14 @@ const SITE = (Deno.env.get("SITE_URL") || "https://417am.party").replace(/\/$/, 
 const TZ = "America/New_York";
 // Self-hosted Umami (umami.tools.ejfox.com). Unset = no script, no tracking.
 const UMAMI_ID = (Deno.env.get("UMAMI_WEBSITE_ID") || "").trim();
+// Umami 3.4: the tracker (?v= dodges a stale 3.0.3 copy cached at Cloudflare's edge) with Web
+// Vitals, the shared umami-plus behavior helper (scroll / engaged time / outbound / copy, no
+// text captured), and recorder.js (heatmaps + strictly-masked session replay; sampling and
+// masking are configured per site inside Umami, not here).
 const UMAMI_TAG = /^[0-9a-f-]{36}$/i.test(UMAMI_ID)
-  ? `<script defer src="https://umami.tools.ejfox.com/script.js" data-website-id="${UMAMI_ID}"></script>`
+  ? `<script defer src="https://umami.tools.ejfox.com/script.js?v=3.4.0" data-website-id="${UMAMI_ID}" data-performance="true"></script>
+  <script defer src="https://umami-plus.tools.ejfox.com/umami-plus.js?v=3"></script>
+  <script defer src="https://umami.tools.ejfox.com/recorder.js" data-website-id="${UMAMI_ID}"></script>`
   : "";
 // Fires once when §2 (the bot era) scrolls into view.
 const UMAMI_DIVIDER = UMAMI_TAG
