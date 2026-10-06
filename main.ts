@@ -38,6 +38,17 @@ const LIVE_PATH = Deno.env.get("LIVE_MANIFEST") ||
   new URL("./data/live/now.json", import.meta.url).pathname;
 const SITE = (Deno.env.get("SITE_URL") || "https://417am.party").replace(/\/$/, "");
 const TZ = "America/New_York";
+// Self-hosted Umami (umami.tools.ejfox.com). Unset = no script, no tracking.
+const UMAMI_ID = (Deno.env.get("UMAMI_WEBSITE_ID") || "").trim();
+const UMAMI_TAG = /^[0-9a-f-]{36}$/i.test(UMAMI_ID)
+  ? `<script defer src="https://umami.tools.ejfox.com/script.js" data-website-id="${UMAMI_ID}"></script>`
+  : "";
+// Fires once when §2 (the bot era) scrolls into view.
+const UMAMI_DIVIDER = UMAMI_TAG
+  ? `<script>(function(){var d=document.getElementById("bot-era");if(!d||!("IntersectionObserver" in window))return;
+var o=new IntersectionObserver(function(es){if(es.some(function(e){return e.isIntersecting})&&window.umami){
+window.umami.track("archive-divider-view");o.disconnect();}});o.observe(d);})();</script>`
+  : "";
 
 type Era = "bot" | "now";
 type Kind = "flux" | "studio" | "bot" | "upload";
@@ -373,8 +384,9 @@ function layout(meta: Meta, body: string): string {
   ${n("twitter:description", meta.description)}
   ${meta.image ? n("twitter:image", meta.image) : ""}
   <style>${PAGE_STYLES}</style>
+  ${UMAMI_TAG}
 </head>
-<body><div class="wrap">${body}</div></body>
+<body><div class="wrap">${body}</div>${UMAMI_DIVIDER}</body>
 </html>`;
 }
 
@@ -390,9 +402,9 @@ function nowFigure(e: Numbered): string {
   const day = localDay(e.date);
   const cap = e.kind === "upload" && e.caption ? ` &middot; ${escapeHtml(e.caption)}` : "";
   return `<figure id="no-${e.no}">
-      <a href="/p/${e.slug}"><img src="${escapeHtml(displayUrl(e))}" loading="lazy" decoding="async"${dims(e)}
+      <a href="/p/${e.slug}" data-umami-event="permalink-open"><img src="${escapeHtml(displayUrl(e))}" loading="lazy" decoding="async"${dims(e)}
         ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="417am no. ${pad(e.no)}, ${e.kind}, ${day}"></a>
-      <figcaption><a href="/p/${e.slug}">no. ${pad(e.no)}</a> &middot; ${GLYPH[e.kind]} ${e.kind} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time>${cap}</figcaption>
+      <figcaption><a href="/p/${e.slug}" data-umami-event="permalink-open">no.${pad(e.no)}</a> &middot; ${GLYPH[e.kind]} ${e.kind} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time>${cap}</figcaption>
     </figure>`;
 }
 
@@ -426,10 +438,10 @@ function galleryPage(now: Numbered[], bot: Numbered[]): string {
       ${nowBlock}
     </section>
     <section>
-      <div class="break"></div>
+      <div class="break" id="bot-era"></div>
       <div class="sec">
         <h2>§2 &nbsp;417am, 2017&ndash;2019 &middot; the original @417am1975 bot</h2>
-        <p>${escapeHtml(BOT_PROSE)} <a href="https://x.com/417am1975">x.com/417am1975</a></p>
+        <p>${escapeHtml(BOT_PROSE)} <a href="https://x.com/417am1975" data-umami-event="outbound" data-umami-event-url="https://x.com/417am1975">x.com/417am1975</a></p>
       </div>
       <div class="grid">${bot.map(botFigure).join("\n")}</div>
     </section>
@@ -439,8 +451,8 @@ function galleryPage(now: Numbered[], bot: Numbered[]): string {
       hourly Twitter bot that ran his after-work scripts with fresh random numbers (§2), and
       resumed in 2026 (§1). Entries are numbered as one body of work, oldest first. Dates are
       the day each piece was made, Eastern time.</p>
-      <p>Feeds carry the new work only: <a href="/rss.xml">rss</a>, <a href="/feed.json">json feed</a>.
-      More at <a href="https://ejfox.com">ejfox.com</a>.</p>
+      <p>Feeds carry the new work only: <a href="/rss.xml" data-umami-event="rss-click">rss</a>, <a href="/feed.json" data-umami-event="feed-json-click">json feed</a>.
+      More at <a href="https://ejfox.com" data-umami-event="outbound" data-umami-event-url="https://ejfox.com">ejfox.com</a>.</p>
     </footer>`,
   );
 }
@@ -452,8 +464,8 @@ function piecePage(e: Numbered): string {
     { title, description: `417am no. ${pad(e.no)}, a ${e.kind} piece, ${day}.`, url: `${SITE}/p/${e.slug}`, image: shareUrl(e) },
     `${siteHead(`<a href="/#no-${e.no}">the full record</a>`)}
     <div class="piece rule">
-      <img src="${escapeHtml(displayUrl(e))}"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="417am no. ${pad(e.no)}, ${e.kind}, ${day}">
-      <p>no. ${pad(e.no)} &middot; ${GLYPH[e.kind]} ${e.kind} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time></p>
+      <a href="${escapeHtml(e.url)}" data-umami-event="image-open"><img src="${escapeHtml(displayUrl(e))}"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="417am no. ${pad(e.no)}, ${e.kind}, ${day}"></a>
+      <p>no. ${pad(e.no)} &middot; ${GLYPH[e.kind]} ${e.kind} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time> &middot; <a href="${escapeHtml(e.url)}" data-umami-event="image-open">full size</a></p>
     </div>`,
   );
 }

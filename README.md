@@ -61,6 +61,7 @@ publish_at?, public_id, width, height, bytes, format}`.
 | `POST_TOKEN` | API bearer token; unset = fail closed |
 | `LIVE_MANIFEST` | path of the live manifest (VPS: `/data2/417am-data/now.json`) |
 | `SITE_URL` | default `https://417am.party` (feeds, og tags) |
+| `UMAMI_WEBSITE_ID` | optional; when set, every page loads `umami.tools.ejfox.com/script.js`. Events: `rss-click`, `feed-json-click`, `permalink-open`, `image-open`, `outbound`, `archive-divider-view` (once, when §2 scrolls into view) |
 | `PORT` | default `8417` |
 
 ## Run locally
