@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "dev": "deno run --watch --allow-net --allow-env --allow-read --allow-write --env-file=.env main.ts",
-    "start": "deno run --allow-net --allow-env --allow-read --allow-write main.ts"
+    "dev": "deno run --watch --allow-net --allow-env --allow-read --allow-write --allow-run=ffmpeg,ffprobe --env-file=.env main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run=ffmpeg,ffprobe main.ts"
   }
 }

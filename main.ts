@@ -16,20 +16,25 @@
 //   GET  /rss.xml         RSS 2.0, era "now" only, live entries only
 //   GET  /feed.json       JSON Feed 1.1, same items
 //   GET  /upload          basic-auth upload form (UPLOAD_PASSWORD)
-//   POST /upload          basic-auth, Cloudinary 417am/uploads, kind "upload"
-//   POST   /api/post            Bearer POST_TOKEN: multipart {image, id, kind, date?, publish_at?}
+//   POST /upload          basic-auth, Cloudinary 417am/uploads, kind "upload" (image or video)
+//   POST   /api/post            Bearer POST_TOKEN: multipart {image|video, id, kind, date?, publish_at?}
 //   DELETE /api/post/:id        Bearer: remove from the manifest (Cloudinary asset is kept)
 //   PATCH  /api/post/:id        Bearer: JSON {publish_at: iso|null} (reschedule a drip item)
 //   GET    /api/schedule        Bearer: every era-"now" entry incl. not-yet-public ones
+//   GET  /media/:name     dev only (MEDIA_DIR set): files stored locally instead of Cloudinary
 //
-// PRIVACY: new entries carry image, date and kind only. Never prompts, recipes, note names
+// PRIVACY: new entries carry media, date and kind only. Never prompts, recipes, note names
 // or piece names. The poster's `id` is private: used only for idempotency + removal, never
 // rendered; public URLs use a random `slug`. PNG text/exif chunks are stripped before upload
-// (generated PNGs embed their prompt). Entries with a future `publish_at` are invisible
-// everywhere public (page, permalink, feeds) until that moment.
+// (generated PNGs embed their prompt). Videos are re-muxed with ffmpeg with every metadata
+// field dropped (container tags, chapters, encoder strings, creation times, H.264 SEI user
+// data, extra data/metadata tracks such as GPS); their poster frame is a stripped PNG.
+// Entries with a future `publish_at` are invisible everywhere public (page, permalink,
+// feeds) until that moment.
 //
 // Env: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET, UPLOAD_PASSWORD,
-//      POST_TOKEN (fail closed if unset), LIVE_MANIFEST, SITE_URL, PORT (8417)
+//      POST_TOKEN (fail closed if unset), LIVE_MANIFEST, SITE_URL, PORT (8417),
+//      MEDIA_DIR (dev only). Video needs ffmpeg + ffprobe on PATH and --allow-run=ffmpeg,ffprobe.
 
 import { Hono } from "jsr:@hono/hono";
 
@@ -55,6 +60,11 @@ const UMAMI_DIVIDER = UMAMI_TAG
 var o=new IntersectionObserver(function(es){if(es.some(function(e){return e.isIntersecting})&&window.umami){
 window.umami.track("archive-divider-view");o.disconnect();}});o.observe(d);})();</script>`
   : "";
+// "video-play" once per video per page view, with its entry number.
+const UMAMI_VIDEO = UMAMI_TAG
+  ? `<script>document.querySelectorAll("video[data-no]").forEach(function(v){v.addEventListener("play",function(){
+if(window.umami)window.umami.track("video-play",{no:v.getAttribute("data-no")});},{once:true});});</script>`
+  : "";
 
 type Era = "bot" | "now";
 type Kind = "flux" | "studio" | "bot" | "upload";
@@ -74,6 +84,12 @@ type Entry = {
   height?: number;
   bytes?: number;
   format?: string;
+  // video entries: `url` is the video file, `poster` its first non-black frame (PNG)
+  media?: "video";
+  mime?: string;
+  duration?: number;
+  poster?: string;
+  poster_public_id?: string;
 };
 
 type Numbered = Entry & { no: number };
@@ -167,7 +183,32 @@ type CldResult = {
   format: string;
 };
 
-async function uploadToCloudinary(file: Blob, folder: string): Promise<CldResult> {
+type Resource = "image" | "video";
+
+// Dev only: with MEDIA_DIR set, files are written there and served from /media/ instead of
+// going to Cloudinary, so the whole posting path can be exercised without touching storage.
+const MEDIA_DIR = (Deno.env.get("MEDIA_DIR") || "").trim().replace(/\/$/, "");
+const MEDIA_RE = /^[a-z0-9-]+\.(png|jpg|gif|webp|mp4|webm)$/;
+const MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+  mp4: "video/mp4", webm: "video/webm",
+};
+
+async function storeLocal(bytes: Uint8Array<ArrayBuffer>, folder: string, ext: string): Promise<CldResult> {
+  await Deno.mkdir(MEDIA_DIR, { recursive: true });
+  const name = `${folder.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${newSlug()}${newSlug()}.${ext}`;
+  await Deno.writeFile(`${MEDIA_DIR}/${name}`, bytes);
+  const d = isPng(bytes) ? pngDims(bytes) : { width: 0, height: 0 };
+  return { secure_url: `${SITE}/media/${name}`, public_id: name, ...d, bytes: bytes.length, format: ext };
+}
+
+// One entry point for every stored file: Cloudinary in production, MEDIA_DIR in dev.
+function store(bytes: Uint8Array<ArrayBuffer>, folder: string, resource: Resource, ext: string, mime: string) {
+  if (MEDIA_DIR) return storeLocal(bytes, folder, ext);
+  return uploadToCloudinary(new Blob([bytes], { type: mime }), folder, resource);
+}
+
+async function uploadToCloudinary(file: Blob, folder: string, resource: Resource = "image"): Promise<CldResult> {
   const cloudName = Deno.env.get("CLOUDINARY_CLOUD_NAME");
   const apiKey = Deno.env.get("CLOUDINARY_API_KEY");
   const apiSecret = Deno.env.get("CLOUDINARY_API_SECRET");
@@ -182,7 +223,7 @@ async function uploadToCloudinary(file: Blob, folder: string): Promise<CldResult
   form.set("timestamp", String(timestamp));
   form.set("folder", folder);
   form.set("signature", signature);
-  const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+  const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/${resource}/upload`, {
     method: "POST",
     body: form,
   });
@@ -195,18 +236,25 @@ function cld(url: string, t: string): string {
   return url.includes("/upload/") ? url.replace("/upload/", `/upload/${t}/`) : url;
 }
 
+const isVideo = (e: Entry) => e.media === "video";
+// The still that stands for an entry: the image itself, or a video's poster frame.
+const stillOf = (e: Entry) => (isVideo(e) && e.poster ? e.poster : e.url);
+
 // What the page shows. Studio pieces are 1-bit/3-level dithers: always lossless PNG, the
 // browser scales them with image-rendering: pixelated. Flux: best-quality auto format.
+// Videos are always served as the stored original (no on-the-fly video transforms).
 function displayUrl(e: Entry): string {
-  if (e.kind === "studio") return cld(e.url, "f_png");
-  if (e.kind === "flux") return cld(e.url, "f_auto,q_auto:best");
-  return e.url;
+  const u = stillOf(e);
+  if (e.kind === "studio") return cld(u, "f_png");
+  if (e.kind === "flux") return cld(u, "f_auto,q_auto:best");
+  return u;
 }
 
 // Social cards / feed readers: a sane size. Studio stays PNG (crisp), the rest -> jpg.
 function shareUrl(e: Entry): string {
-  if (e.kind === "studio") return cld(e.url, "c_limit,w_1600,f_png");
-  return cld(e.url, "c_limit,w_1600,f_jpg,q_90");
+  const u = stillOf(e);
+  if (e.kind === "studio") return cld(u, "c_limit,w_1600,f_png");
+  return cld(u, "c_limit,w_1600,f_jpg,q_90");
 }
 
 // ---- PNG metadata strip ---------------------------------------------------------------
@@ -239,6 +287,173 @@ function stripPng(b: Uint8Array): Uint8Array<ArrayBuffer> {
     o += p.length;
   }
   return out;
+}
+
+function pngDims(b: Uint8Array): { width: number; height: number } {
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  return { width: dv.getUint32(16), height: dv.getUint32(20) };
+}
+
+// ---- video: validate, strip, poster ---------------------------------------------------------
+// ffmpeg/ffprobe run with a fixed argv (no shell) on a temp copy. The container is sniffed
+// from its magic bytes and then FORCED (-f mov / -f matroska), so ffmpeg never auto-picks a
+// demuxer that can read other files (hls, concat), and only the file protocol is allowed.
+
+const MAX_VIDEO = 90 * 1024 * 1024; // Cloudflare (free) rejects request bodies over 100 MB
+const MAX_SECONDS = 180;
+const MAX_SIDE = 4096;
+const VIDEO_RULES = {
+  mp4: { demux: "mov", mux: "mp4", mime: "video/mp4", v: ["h264"], a: ["aac"] },
+  webm: { demux: "matroska", mux: "webm", mime: "video/webm", v: ["vp8", "vp9"], a: ["opus", "vorbis"] },
+} as const;
+type VideoFmt = keyof typeof VIDEO_RULES;
+
+class VideoError extends Error {
+  constructor(public status: 400 | 413 | 415 | 503, msg: string) {
+    super(msg);
+  }
+}
+
+// ISO-BMFF ("....ftyp") or EBML (1A 45 DF A3). Anything else is not a video we take.
+function sniffVideo(b: Uint8Array): VideoFmt | null {
+  const s = (i: number, j: number) => String.fromCharCode(...b.subarray(i, j));
+  if (b.length > 16 && s(4, 8) === "ftyp") return "mp4";
+  if (b.length > 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return "webm";
+  return null;
+}
+
+async function run(cmd: "ffmpeg" | "ffprobe", args: string[], timeoutMs = 120_000): Promise<string> {
+  let out: Deno.CommandOutput;
+  try {
+    out = await new Deno.Command(cmd, {
+      args: ["-hide_banner", "-v", "error", ...args],
+      stdin: "null", stdout: "piped", stderr: "piped",
+      signal: AbortSignal.timeout(timeoutMs),
+    }).output();
+  } catch (err) {
+    console.error(`${cmd} unavailable`, err);
+    throw new VideoError(503, "video processing unavailable");
+  }
+  if (!out.success) {
+    console.error(`${cmd} failed: ${new TextDecoder().decode(out.stderr).slice(0, 2000)}`);
+    throw new VideoError(415, "could not read that video");
+  }
+  return new TextDecoder().decode(out.stdout);
+}
+
+type ProbeStream = { codec_type?: string; codec_name?: string; width?: number; height?: number };
+
+// First frame (within the first 10 s) that is not black: some light or some contrast.
+async function firstLitFrame(file: string): Promise<number> {
+  const txt = await run("ffmpeg", [
+    "-nostdin", "-protocol_whitelist", "file", "-t", "10", "-i", file, "-an", "-sn", "-dn",
+    "-vf", "signalstats,metadata=mode=print:file=-", "-f", "null", "-",
+  ]);
+  let t = 0;
+  const stat: Record<string, number> = {};
+  const lit = () => stat.YAVG > 24 || stat.YMAX - stat.YMIN > 48;
+  for (const line of txt.split("\n")) {
+    const f = line.match(/pts_time:([\d.]+)/);
+    if (f) {
+      if ("YAVG" in stat && lit()) return t;
+      t = Number(f[1]);
+      for (const k in stat) delete stat[k];
+      continue;
+    }
+    const m = line.match(/lavfi\.signalstats\.(YAVG|YMIN|YMAX)=([\d.]+)/);
+    if (m) stat[m[1]] = Number(m[2]);
+  }
+  return "YAVG" in stat && lit() ? t : 0;
+}
+
+type CleanVideo = {
+  fmt: VideoFmt;
+  video: Uint8Array<ArrayBuffer>;
+  poster: Uint8Array<ArrayBuffer>;
+  width: number;
+  height: number;
+  duration: number;
+};
+
+async function cleanVideo(input: Uint8Array): Promise<CleanVideo> {
+  if (input.length > MAX_VIDEO) throw new VideoError(413, "video over 90 MB");
+  const fmt = sniffVideo(input);
+  if (!fmt) throw new VideoError(415, "mp4 (H.264/AAC) or webm (VP8/VP9) only");
+  const rule = VIDEO_RULES[fmt];
+  const dir = await Deno.makeTempDir({ prefix: "v417-" });
+  try {
+    const src = `${dir}/in`, out = `${dir}/out.${fmt}`, still = `${dir}/poster.png`;
+    await Deno.writeFile(src, input);
+    const probe = JSON.parse(await run("ffprobe", [
+      "-protocol_whitelist", "file", "-f", rule.demux, "-i", src,
+      "-show_entries", "format=duration:stream=codec_type,codec_name,width,height", "-of", "json",
+    ]));
+    const streams: ProbeStream[] = probe.streams || [];
+    const v = streams.find((s) => s.codec_type === "video");
+    const a = streams.find((s) => s.codec_type === "audio");
+    const duration = Number(probe.format?.duration);
+    if (!v || !(rule.v as readonly string[]).includes(v.codec_name || "")) {
+      throw new VideoError(415, fmt === "mp4" ? "mp4 video must be H.264" : "webm video must be VP8 or VP9");
+    }
+    if (a && !(rule.a as readonly string[]).includes(a.codec_name || "")) {
+      throw new VideoError(415, fmt === "mp4" ? "mp4 audio must be AAC" : "webm audio must be Opus or Vorbis");
+    }
+    if (!(duration > 0)) throw new VideoError(415, "could not read the duration");
+    if (duration > MAX_SECONDS) throw new VideoError(413, `video over ${MAX_SECONDS} s`);
+    if (!v.width || !v.height || v.width > MAX_SIDE || v.height > MAX_SIDE) {
+      throw new VideoError(415, `video frame over ${MAX_SIDE} px`);
+    }
+    // Re-mux the picture (no re-encode): first video + first audio stream only (drops data,
+    // subtitle and timed-metadata tracks), no global/stream/chapter metadata, bitexact = no
+    // encoder tags and zeroed creation times; H.264 SEI NAL units (x264 settings strings,
+    // user data) out. AAC and Vorbis audio IS re-encoded (cheap): AAC encoders hide their
+    // name and version in the bitstream (data elements) and Vorbis carries a comment header
+    // (vendor + tags); a stream copy would keep both. Opus packets carry nothing: copied.
+    const audio = !a ? [] : a.codec_name === "opus" ? ["-c:a", "copy"]
+      : fmt === "mp4" ? ["-c:a", "aac", "-b:a", "192k"] : ["-c:a", "libopus", "-b:a", "160k"];
+    await run("ffmpeg", [
+      "-nostdin", "-protocol_whitelist", "file", "-f", rule.demux, "-i", src,
+      "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy", ...audio,
+      ...(fmt === "mp4" ? ["-bsf:v", "filter_units=remove_types=6"] : []),
+      "-map_metadata", "-1", "-map_metadata:s:v", "-1", "-map_metadata:s:a", "-1", "-map_chapters", "-1",
+      "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
+      "-metadata:s:v", "handler_name=", "-metadata:s:a", "handler_name=",
+      "-metadata:s:v", "encoder=", "-metadata:s:a", "encoder=",
+      ...(fmt === "mp4" ? ["-movflags", "+faststart"] : []),
+      "-f", rule.mux, out,
+    ]);
+    const at = await firstLitFrame(out);
+    await run("ffmpeg", [
+      "-nostdin", "-protocol_whitelist", "file", "-ss", String(at), "-i", out,
+      "-frames:v", "1", "-an", "-map_metadata", "-1", "-fflags", "+bitexact", "-flags:v", "+bitexact",
+      "-c:v", "png", "-f", "image2", still,
+    ]);
+    const poster = stripPng(await Deno.readFile(still));
+    return { fmt, video: await Deno.readFile(out), poster, ...pngDims(poster), duration };
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+// Store a cleaned video + its poster; returns the entry fields they fill in.
+async function storeVideo(input: Uint8Array, folder: string): Promise<Partial<Entry>> {
+  const c = await cleanVideo(input);
+  const rule = VIDEO_RULES[c.fmt];
+  const p = await store(c.poster, folder, "image", "png", "image/png");
+  const r = await store(c.video, folder, "video", c.fmt, rule.mime);
+  return {
+    media: "video",
+    url: r.secure_url,
+    public_id: r.public_id,
+    poster: p.secure_url,
+    poster_public_id: p.public_id,
+    width: c.width,
+    height: c.height,
+    bytes: c.video.length,
+    format: c.fmt,
+    mime: rule.mime,
+    duration: Math.round(c.duration * 100) / 100,
+  };
 }
 
 // ---- auth -----------------------------------------------------------------------------
@@ -284,6 +499,12 @@ function checkBearer(req: Request): boolean {
 // Hierarchy from position, case, weight and 1px rules only.
 
 const GLYPH: Record<Kind, string> = { flux: "●", studio: "■", upload: "○", bot: "◇" };
+// Videos keep their kind glyph and add ▶ (U+25B6, the same Geometric Shapes block as ● ■ ○ ◇,
+// so it sits on the same monospace cell). U+FE0E pins the text presentation: without it iOS
+// draws U+25B6 as a colored emoji button.
+const VIDEO_MARK = "▶︎";
+const kindLabel = (e: Entry) => `${GLYPH[e.kind]} ${e.kind}${isVideo(e) ? ` &middot; ${VIDEO_MARK} video` : ""}`;
+const kindText = (e: Entry) => `${GLYPH[e.kind]} ${e.kind}${isVideo(e) ? ` · ${VIDEO_MARK} video` : ""}`;
 
 const NOW_PROSE =
   "417am, continued. New generative pieces, added as they are chosen; the newest is first. " +
@@ -325,8 +546,8 @@ const PAGE_STYLES = `
   }
   @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
   figure { border-right: 1px solid var(--mid); border-bottom: 1px solid var(--mid); }
-  figure img { display: block; width: 100%; height: auto; }
-  img.crisp { image-rendering: crisp-edges; image-rendering: pixelated; }
+  figure img, figure video { display: block; width: 100%; height: auto; background: var(--bg); }
+  img.crisp, video.crisp { image-rendering: crisp-edges; image-rendering: pixelated; }
   figcaption { padding: 8px 12px 12px; border-top: 1px solid var(--mid); }
   figcaption a { text-decoration: none; }
   figcaption a:hover { text-decoration: underline; }
@@ -334,7 +555,7 @@ const PAGE_STYLES = `
   .colophon { padding: 48px 0 64px; }
   .colophon p { margin-top: 8px; max-width: 72ch; }
   .piece { padding: 16px 0 48px; }
-  .piece img { display: block; max-width: 100%; max-height: 88vh; width: auto; height: auto; margin: 0 auto; }
+  .piece img, .piece video { display: block; max-width: 100%; max-height: 88vh; width: auto; height: auto; margin: 0 auto; }
   .piece p { margin-top: 12px; }
   form.post { max-width: 48ch; padding: 32px 0; display: grid; gap: 16px; }
   label { display: block; margin-bottom: 4px; color: var(--mid); }
@@ -364,7 +585,13 @@ function localDay(iso: string): string {
 
 const pad = (n: number) => String(n).padStart(4, "0");
 
-type Meta = { title: string; description: string; url: string; image?: string };
+type Meta = {
+  title: string;
+  description: string;
+  url: string;
+  image?: string;
+  video?: { url: string; type: string; width?: number; height?: number };
+};
 
 function layout(meta: Meta, body: string): string {
   const m = (p: string, v: string) => `<meta property="${p}" content="${escapeHtml(v)}">`;
@@ -385,6 +612,9 @@ function layout(meta: Meta, body: string): string {
   ${m("og:description", meta.description)}
   ${m("og:url", meta.url)}
   ${meta.image ? m("og:image", meta.image) : ""}
+  ${meta.video ? [m("og:video", meta.video.url), m("og:video:secure_url", meta.video.url), m("og:video:type", meta.video.type),
+      meta.video.width ? m("og:video:width", String(meta.video.width)) : "",
+      meta.video.height ? m("og:video:height", String(meta.video.height)) : ""].filter(Boolean).join("\n  ") : ""}
   ${n("twitter:card", meta.image ? "summary_large_image" : "summary")}
   ${n("twitter:title", meta.title)}
   ${n("twitter:description", meta.description)}
@@ -392,7 +622,7 @@ function layout(meta: Meta, body: string): string {
   <style>${PAGE_STYLES}</style>
   ${UMAMI_TAG}
 </head>
-<body><div class="wrap">${body}</div>${UMAMI_DIVIDER}</body>
+<body><div class="wrap">${body}</div>${UMAMI_DIVIDER}${body.includes("<video") ? UMAMI_VIDEO : ""}</body>
 </html>`;
 }
 
@@ -404,13 +634,24 @@ function dims(e: Entry): string {
   return e.width && e.height ? ` width="${e.width}" height="${e.height}"` : "";
 }
 
+const altText = (e: Numbered) => `417am no. ${pad(e.no)}, ${e.kind}${isVideo(e) ? " video" : ""}, ${localDay(e.date)}`;
+
+// muted + loop + playsinline, never autoplay: nothing moves (or downloads past the first
+// bytes) until someone presses play.
+function videoTag(e: Numbered): string {
+  return `<video src="${escapeHtml(e.url)}" poster="${escapeHtml(displayUrl(e))}"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}muted loop playsinline controls preload="metadata" data-no="${pad(e.no)}" aria-label="${altText(e)}"></video>`;
+}
+
 function nowFigure(e: Numbered): string {
   const day = localDay(e.date);
   const cap = e.kind === "upload" && e.caption ? ` &middot; ${escapeHtml(e.caption)}` : "";
+  const media = isVideo(e)
+    ? videoTag(e)
+    : `<a href="/p/${e.slug}" data-umami-event="permalink-open"><img src="${escapeHtml(displayUrl(e))}" loading="lazy" decoding="async"${dims(e)}
+        ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="${altText(e)}"></a>`;
   return `<figure id="no-${e.no}">
-      <a href="/p/${e.slug}" data-umami-event="permalink-open"><img src="${escapeHtml(displayUrl(e))}" loading="lazy" decoding="async"${dims(e)}
-        ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="417am no. ${pad(e.no)}, ${e.kind}, ${day}"></a>
-      <figcaption><a href="/p/${e.slug}" data-umami-event="permalink-open">no.${pad(e.no)}</a> &middot; ${GLYPH[e.kind]} ${e.kind} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time>${cap}</figcaption>
+      ${media}
+      <figcaption><a href="/p/${e.slug}" data-umami-event="permalink-open">no.${pad(e.no)}</a> &middot; ${kindLabel(e)} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time>${cap}</figcaption>
     </figure>`;
 }
 
@@ -439,7 +680,7 @@ function galleryPage(now: Numbered[], bot: Numbered[]): string {
     <section>
       <div class="sec rule">
         <h2>§1 &nbsp;417am, 2026&ndash;</h2>
-        <p>${escapeHtml(NOW_PROSE)}</p>
+        <p>${escapeHtml(NOW_PROSE)}${now.some(isVideo) ? ` ${VIDEO_MARK} marks a moving piece.` : ""}</p>
       </div>
       ${nowBlock}
     </section>
@@ -465,13 +706,24 @@ function galleryPage(now: Numbered[], bot: Numbered[]): string {
 
 function piecePage(e: Numbered): string {
   const day = localDay(e.date);
-  const title = `417am no. ${pad(e.no)} · ${e.kind} · ${day}`;
+  const v = isVideo(e);
+  const title = `417am no. ${pad(e.no)} · ${e.kind}${v ? " video" : ""} · ${day}`;
+  const media = v
+    ? videoTag(e)
+    : `<a href="${escapeHtml(e.url)}" data-umami-event="image-open"><img src="${escapeHtml(displayUrl(e))}"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="${altText(e)}"></a>`;
+  const open = v ? "video-open" : "image-open";
   return layout(
-    { title, description: `417am no. ${pad(e.no)}, a ${e.kind} piece, ${day}.`, url: `${SITE}/p/${e.slug}`, image: shareUrl(e) },
+    {
+      title,
+      description: `417am no. ${pad(e.no)}, a ${e.kind} ${v ? "video" : "piece"}, ${day}.`,
+      url: `${SITE}/p/${e.slug}`,
+      image: shareUrl(e),
+      ...(v ? { video: { url: e.url, type: e.mime || "video/mp4", width: e.width, height: e.height } } : {}),
+    },
     `${siteHead(`<a href="/#no-${e.no}">the full record</a>`)}
     <div class="piece rule">
-      <a href="${escapeHtml(e.url)}" data-umami-event="image-open"><img src="${escapeHtml(displayUrl(e))}"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="417am no. ${pad(e.no)}, ${e.kind}, ${day}"></a>
-      <p>no. ${pad(e.no)} &middot; ${GLYPH[e.kind]} ${e.kind} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time> &middot; <a href="${escapeHtml(e.url)}" data-umami-event="image-open">full size</a></p>
+      ${media}
+      <p>no. ${pad(e.no)} &middot; ${kindLabel(e)} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time> &middot; <a href="${escapeHtml(e.url)}" data-umami-event="${open}">${v ? "file" : "full size"}</a></p>
     </div>`,
   );
 }
@@ -484,8 +736,8 @@ function uploadPage(message?: { ok: boolean; text: string }): string {
     <div class="rule">${msg}
     <form class="post" method="post" enctype="multipart/form-data" action="/upload">
       <div>
-        <label for="image">image</label>
-        <input type="file" id="image" name="image" accept="image/*" required>
+        <label for="image">image, or video (mp4 H.264 / webm, up to 90 MB and ${MAX_SECONDS} s)</label>
+        <input type="file" id="image" name="image" accept="image/*,video/mp4,video/webm" required>
       </div>
       <div>
         <label for="caption">caption (optional, shown on the site)</label>
@@ -503,16 +755,25 @@ const xml = (s: string) =>
 
 function itemHtml(e: Numbered): string {
   // No inline style: readers strip it and the W3C validator flags it. Studio stays a PNG.
-  return `<p><a href="${SITE}/p/${e.slug}"><img src="${xml(shareUrl(e))}" alt="417am no. ${pad(e.no)}, ${e.kind}, ${localDay(e.date)}"></a></p>`;
+  // Videos: a <video> for readers that play it, the linked poster frame for those that don't.
+  const still = `<a href="${SITE}/p/${e.slug}"><img src="${xml(shareUrl(e))}" alt="${altText(e)}"></a>`;
+  if (!isVideo(e)) return `<p>${still}</p>`;
+  return `<p><video src="${xml(e.url)}" poster="${xml(shareUrl(e))}" controls muted loop playsinline preload="metadata">${still}</video></p>`;
 }
 
-const itemTitle = (e: Numbered) => `no. ${pad(e.no)} · ${GLYPH[e.kind]} ${e.kind} · ${localDay(e.date)}`;
+const itemTitle = (e: Numbered) => `no. ${pad(e.no)} · ${kindText(e)} · ${localDay(e.date)}`;
 const guid = (e: Entry) => `417am.party:${e.slug}`;
 
 function rss(items: Numbered[]): string {
   const built = items[0] ? new Date(publicAt(items[0])) : new Date();
   const body = items.map((e) => {
     const mime = e.kind === "studio" ? "image/png" : "image/jpeg";
+    const media = isVideo(e)
+      ? `<enclosure url="${xml(e.url)}" length="${e.bytes || 0}" type="${e.mime || "video/mp4"}"/>
+      <media:content url="${xml(e.url)}" medium="video" type="${e.mime || "video/mp4"}"${e.bytes ? ` fileSize="${e.bytes}"` : ""}${e.duration ? ` duration="${Math.round(e.duration)}"` : ""}${e.width ? ` width="${e.width}" height="${e.height}"` : ""}>
+        <media:thumbnail url="${xml(shareUrl(e))}"/>
+      </media:content>`
+      : `<media:content url="${xml(shareUrl(e))}" medium="image" type="${mime}"/>`;
     return `    <item>
       <title>${xml(itemTitle(e))}</title>
       <link>${SITE}/p/${e.slug}</link>
@@ -520,7 +781,7 @@ function rss(items: Numbered[]): string {
       <pubDate>${new Date(publicAt(e)).toUTCString()}</pubDate>
       <description>${xml(itemHtml(e))}</description>
       <content:encoded><![CDATA[${itemHtml(e)}]]></content:encoded>
-      <media:content url="${xml(shareUrl(e))}" medium="image" type="${mime}"/>
+      ${media}
     </item>`;
   }).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -554,6 +815,16 @@ function jsonFeed(items: Numbered[]) {
       content_html: itemHtml(e),
       image: shareUrl(e),
       date_published: new Date(publicAt(e)).toISOString(),
+      ...(isVideo(e)
+        ? {
+          attachments: [{
+            url: e.url,
+            mime_type: e.mime || "video/mp4",
+            ...(e.bytes ? { size_in_bytes: e.bytes } : {}),
+            ...(e.duration ? { duration_in_seconds: Math.round(e.duration) } : {}),
+          }],
+        }
+        : {}),
     })),
   };
 }
@@ -608,42 +879,73 @@ app.post("/upload", async (c) => {
     const file = form.get("image");
     const caption = String(form.get("caption") || "").slice(0, 280);
     if (!(file instanceof File) || file.size === 0) {
-      return c.html(uploadPage({ ok: false, text: "No image selected." }), 400);
+      return c.html(uploadPage({ ok: false, text: "No file selected." }), 400);
     }
+    if (file.size > MAX_VIDEO) return c.html(uploadPage({ ok: false, text: "Over 90 MB." }), 413);
     let bytes = new Uint8Array(await file.arrayBuffer());
-    if (isPng(bytes)) bytes = stripPng(bytes);
-    const r = await uploadToCloudinary(new Blob([bytes], { type: file.type }), "417am/uploads");
+    let fields: Partial<Entry>;
+    if (sniffVideo(bytes)) {
+      fields = await storeVideo(bytes, "417am/uploads");
+    } else {
+      if (isPng(bytes)) bytes = stripPng(bytes);
+      const ext = isPng(bytes) ? "png" : (file.type.split("/")[1] || "jpg").replace("jpeg", "jpg");
+      const r = await store(bytes, "417am/uploads", "image", ext, file.type);
+      fields = { url: r.secure_url, public_id: r.public_id, width: r.width, height: r.height, bytes: r.bytes, format: r.format };
+    }
     const nowIso = new Date().toISOString();
     await mutateLive((entries) => {
       entries.unshift({
-        id: "upload:" + r.public_id,
+        id: "upload:" + fields.public_id,
         slug: newSlug(),
         era: "now",
         kind: "upload",
-        url: r.secure_url,
+        url: fields.url!,
         caption,
         date: nowIso,
         posted_at: nowIso,
-        public_id: r.public_id,
-        width: r.width,
-        height: r.height,
-        bytes: r.bytes,
-        format: r.format,
+        ...fields,
       });
     });
     return c.html(uploadPage({ ok: true, text: "Posted. Check the record." }));
   } catch (err) {
     console.error(err);
+    if (err instanceof VideoError) return c.html(uploadPage({ ok: false, text: err.message }), err.status);
     const text = err instanceof Error ? err.message : "Upload failed";
     return c.html(uploadPage({ ok: false, text }), 500);
   }
 });
 
+if (MEDIA_DIR) {
+  // Dev only. Single-range support so browsers can seek in videos.
+  app.get("/media/:name", async (c) => {
+    const name = c.req.param("name");
+    if (!MEDIA_RE.test(name)) return c.text("not found", 404);
+    let data: Uint8Array;
+    try {
+      data = await Deno.readFile(`${MEDIA_DIR}/${name}`);
+    } catch {
+      return c.text("not found", 404);
+    }
+    const type = MIME[name.split(".").pop()!];
+    const range = (c.req.header("range") || "").match(/^bytes=(\d*)-(\d*)$/);
+    if (range && (range[1] || range[2])) {
+      const start = range[1] ? Number(range[1]) : Math.max(0, data.length - Number(range[2]));
+      const end = range[1] && range[2] ? Math.min(Number(range[2]), data.length - 1) : data.length - 1;
+      if (start > end) return c.body(null, 416, { "Content-Range": `bytes */${data.length}` });
+      return c.body(data.slice(start, end + 1), 206, {
+        "Content-Type": type, "Accept-Ranges": "bytes", "Content-Range": `bytes ${start}-${end}/${data.length}`,
+      });
+    }
+    return c.body(data.slice(), 200, { "Content-Type": type, "Accept-Ranges": "bytes" });
+  });
+}
+
 // ---- posting API ----------------------------------------------------------------------
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$/;
 const API_KINDS = new Set(["flux", "studio"]);
-const MAX_UPLOAD = 9 * 1024 * 1024; // Cloudinary free plan image cap is 10 MB
+const VIDEO_KINDS = new Set(["flux", "studio", "upload"]);
+const MAX_UPLOAD = 9 * 1024 * 1024; // images; videos: MAX_VIDEO
 const inFlight = new Set<string>();
 
 function isoOrNull(v: unknown): string | null {
@@ -662,11 +964,15 @@ app.post("/api/post", async (c) => {
   }
   const id = String(form.get("id") || "");
   const kind = String(form.get("kind") || "");
-  const file = form.get("image");
+  const asVideo = form.has("video");
+  const file = form.get(asVideo ? "video" : "image");
   if (!ID_RE.test(id)) return c.json({ error: "bad id" }, 400);
-  if (!API_KINDS.has(kind)) return c.json({ error: "kind must be flux|studio" }, 400);
-  if (!(file instanceof File) || file.size === 0) return c.json({ error: "no image" }, 400);
-  if (file.size > MAX_UPLOAD) return c.json({ error: "image over 9 MB" }, 413);
+  if (asVideo ? !VIDEO_KINDS.has(kind) : !API_KINDS.has(kind)) {
+    return c.json({ error: asVideo ? "kind must be flux|studio|upload" : "kind must be flux|studio" }, 400);
+  }
+  if (!(file instanceof File) || file.size === 0) return c.json({ error: asVideo ? "no video" : "no image" }, 400);
+  if (asVideo && file.size > MAX_VIDEO) return c.json({ error: "video over 90 MB" }, 413);
+  if (!asVideo && file.size > MAX_UPLOAD) return c.json({ error: "image over 9 MB" }, 413);
   const pubRaw = form.get("publish_at");
   const publish_at = pubRaw ? isoOrNull(pubRaw) : null;
   if (pubRaw && !publish_at) return c.json({ error: "bad publish_at" }, 400);
@@ -681,23 +987,25 @@ app.post("/api/post", async (c) => {
   inFlight.add(id);
   try {
     let bytes = new Uint8Array(await file.arrayBuffer());
-    if (!isPng(bytes)) return c.json({ error: "PNG only" }, 415);
-    bytes = stripPng(bytes);
-    const r = await uploadToCloudinary(new Blob([bytes], { type: "image/png" }), `417am/now/${kind}`);
+    let fields: Partial<Entry>;
+    if (asVideo) {
+      fields = await storeVideo(bytes, `417am/now/${kind}`);
+    } else {
+      if (!isPng(bytes)) return c.json({ error: "PNG only" }, 415);
+      bytes = stripPng(bytes);
+      const r = await store(bytes, `417am/now/${kind}`, "image", "png", "image/png");
+      fields = { url: r.secure_url, public_id: r.public_id, width: r.width, height: r.height, bytes: r.bytes, format: r.format };
+    }
     const entry: Entry = {
       id,
       slug: newSlug(),
       era: "now",
       kind: kind as Kind,
-      url: r.secure_url,
+      url: fields.url!,
       date,
       posted_at: nowIso,
       ...(publish_at ? { publish_at } : {}),
-      public_id: r.public_id,
-      width: r.width,
-      height: r.height,
-      bytes: r.bytes,
-      format: r.format,
+      ...fields,
     };
     const stored = await mutateLive((entries) => {
       const dup = entries.find((e) => e.id === id);
@@ -705,13 +1013,14 @@ app.post("/api/post", async (c) => {
       entries.unshift(entry);
       return entry;
     });
-    console.log(`api post ${kind} ${stored.slug}${publish_at ? " at " + publish_at : ""}`);
+    console.log(`api post ${kind}${asVideo ? " video" : ""} ${stored.slug}${publish_at ? " at " + publish_at : ""}`);
     return c.json(
       { ok: true, existed: stored !== entry, slug: stored.slug, publish_at: stored.publish_at ?? null },
       201,
     );
   } catch (err) {
     console.error("api post failed", err);
+    if (err instanceof VideoError) return c.json({ error: err.message }, err.status);
     return c.json({ error: "upload failed" }, 502);
   } finally {
     inFlight.delete(id);
@@ -761,6 +1070,7 @@ app.get("/api/schedule", async (c) => {
     .map((e) => ({
       id: e.id,
       kind: e.kind,
+      ...(isVideo(e) ? { media: "video" } : {}),
       slug: e.slug,
       date: e.date,
       public_at: new Date(publicAt(e)).toISOString(),
