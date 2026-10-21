@@ -503,7 +503,6 @@ const GLYPH: Record<Kind, string> = { flux: "●", studio: "■", upload: "○",
 // so it sits on the same monospace cell). U+FE0E pins the text presentation: without it iOS
 // draws U+25B6 as a colored emoji button.
 const VIDEO_MARK = "▶︎";
-const kindLabel = (e: Entry) => `${GLYPH[e.kind]} ${e.kind}${isVideo(e) ? ` &middot; ${VIDEO_MARK} video` : ""}`;
 const kindText = (e: Entry) => `${GLYPH[e.kind]} ${e.kind}${isVideo(e) ? ` · ${VIDEO_MARK} video` : ""}`;
 
 const FEED_DESC =
@@ -512,68 +511,66 @@ const FEED_DESC =
   "lives on the site. This feed carries only the new work, 2026 onward.";
 
 const PAGE_STYLES = `
-  :root { color-scheme: dark; --bg: #000; --fg: #e8e8e8; --mid: #6b6b6b; }
+  /* White cube (EJ 2026-10-20: "nyc art world vibe"): white walls, one small grotesk size,
+     works hung with room around them, wall-label captions. */
+  :root { color-scheme: light; --bg: #fff; --fg: #111; --mid: #8a8a8a; --hair: #e4e4e4; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html {
     background: var(--bg); color: var(--fg);
-    font-family: ui-monospace, "SF Mono", Menlo, "DejaVu Sans Mono", monospace;
-    font-size: 14px; line-height: 1.5;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 14px; line-height: 1.4; letter-spacing: 0.005em;
+    -webkit-font-smoothing: antialiased;
     -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
   }
   body { background: var(--bg); }
   h1, h2, p, figcaption, input, button, label, time { font: inherit; }
-  a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-  .wrap { padding: 0 16px; }
-  @media (min-width: 900px) { .wrap { padding: 0 32px; } }
-  .rule { border-top: 1px solid var(--mid); }
-  .head { padding: 24px 0 16px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 3ch; }
-  .head h1 { font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
-  .head nav { margin-left: auto; display: flex; gap: 2ch; }
+  a { color: inherit; text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 2px; }
+  .wrap { padding: 0 20px; max-width: 1800px; margin: 0 auto; }
+  @media (min-width: 900px) { .wrap { padding: 0 48px; } }
   .mid { color: var(--mid); }
-  /* one hairline row per section: title left, legend right */
-  .bar {
-    display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 3ch;
-    padding: 32px 0 8px; border-top: 1px solid var(--mid);
-  }
+  .head { padding: 28px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 32px; }
+  .head h1 { font-weight: 700; }
+  .head nav { margin-left: auto; display: flex; gap: 24px; }
+  /* section title: a quiet line, lots of air above */
+  .bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 32px; padding: 88px 0 28px; }
   .bar h2 { font-weight: 700; }
-  /* the record: uniform square cells on 1px rules, the whole piece always visible */
-  .grid {
-    display: grid; grid-template-columns: repeat(2, 1fr);
-    border-top: 1px solid var(--mid); border-left: 1px solid var(--mid);
-  }
-  @media (min-width: 700px) { .grid { grid-template-columns: repeat(3, 1fr); } }
-  @media (min-width: 1100px) { .grid { grid-template-columns: repeat(4, 1fr); } }
-  @media (min-width: 1600px) { .grid { grid-template-columns: repeat(6, 1fr); } }
-  .cell {
-    position: relative; display: block; aspect-ratio: 1; overflow: hidden; background: var(--bg);
-    border-right: 1px solid var(--mid); border-bottom: 1px solid var(--mid);
-  }
-  .cell img { display: block; width: 100%; height: 100%; object-fit: contain; }
+  /* works on the wall: each piece contained in an even box (never cropped), bottoms aligned
+     so the labels line up, a wall label under each */
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 48px 20px; }
+  @media (min-width: 700px) { .grid { grid-template-columns: repeat(3, 1fr); gap: 64px 40px; } }
+  @media (min-width: 1100px) { .grid { grid-template-columns: repeat(4, 1fr); gap: 72px 48px; } }
+  @media (min-width: 1600px) { .grid { grid-template-columns: repeat(5, 1fr); } }
+  .work { display: block; }
+  .work:hover { text-decoration: none; }
+  .frame { aspect-ratio: 1; display: flex; align-items: flex-end; justify-content: center; }
+  /* a hairline edge so white-ground pieces (1-bit studio work) keep their shape on the white wall */
+  .frame img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; outline: 1px solid var(--hair); outline-offset: 0; }
+  .piece img { outline: 1px solid var(--hair); }
   img.crisp, video.crisp { image-rendering: crisp-edges; image-rendering: pixelated; }
-  .cell .tag {
-    position: absolute; left: 0; bottom: 0; padding: 2px 8px;
-    background: var(--bg); border-top: 1px solid var(--mid); border-right: 1px solid var(--mid);
-    opacity: 0; transition: opacity 120ms;
-  }
-  .cell:hover .tag, .cell:focus-visible .tag { opacity: 1; }
-  .cell:focus-visible { outline: 1px solid var(--fg); outline-offset: -1px; }
+  .label { margin-top: 12px; }
+  .label i, .tomb i { font-style: italic; }
+  .work:hover .label i { text-decoration: underline; text-underline-offset: 2px; }
+  .work:focus-visible { outline: 1px solid var(--fg); outline-offset: 6px; }
   .empty { padding: 16px 0 32px; color: var(--mid); }
-  .colophon { padding: 32px 0 64px; margin-top: 48px; border-top: 1px solid var(--mid); color: var(--mid); }
-  .colophon p { max-width: 72ch; }
-  .colophon p + p { margin-top: 8px; }
-  .piece { padding: 16px 0 48px; }
-  .piece img, .piece video { display: block; max-width: 100%; max-height: 88vh; width: auto; height: auto; margin: 0 auto; }
-  .piece p { margin-top: 12px; }
-  form.post { max-width: 48ch; padding: 32px 0; display: grid; gap: 16px; }
+  .info { margin-top: 120px; padding: 28px 0 72px; border-top: 1px solid var(--hair);
+          display: grid; gap: 24px 48px; }
+  @media (min-width: 900px) { .info { grid-template-columns: 1fr 2fr 1fr; } }
+  .info p { max-width: 60ch; }
+  .info p + p { margin-top: 8px; }
+  /* one work: centered, the checklist entry beside it */
+  .piece { padding: 64px 0 96px; display: grid; gap: 28px; }
+  @media (min-width: 1100px) { .piece { grid-template-columns: 1fr 260px; align-items: end; gap: 48px; } }
+  .piece img, .piece video { display: block; max-width: 100%; max-height: 82vh; width: auto; height: auto; margin: 0 auto; }
+  .tomb p + p { margin-top: 2px; }
+  .tomb .gap { margin-top: 16px; }
+  form.post { max-width: 48ch; padding: 48px 0; display: grid; gap: 16px; }
   label { display: block; margin-bottom: 4px; color: var(--mid); }
   input[type="text"], input[type="file"] {
     width: 100%; padding: 8px; background: var(--bg); color: var(--fg);
     border: 1px solid var(--mid); border-radius: 0;
   }
-  button {
-    padding: 8px; background: var(--fg); color: var(--bg); border: none; border-radius: 0;
-    cursor: pointer; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
-  }
+  button { padding: 10px; background: var(--fg); color: var(--bg); border: none; border-radius: 0; cursor: pointer; }
   .msg { padding-top: 16px; }
 `;
 
@@ -633,10 +630,9 @@ function layout(meta: Meta, body: string): string {
 </html>`;
 }
 
-const HEAD_NAV = `<span class="mid">a record of generative work, 2017&ndash;</span>
-    <nav><a href="/rss.xml" data-umami-event="rss-click">rss</a><a href="/feed.json" data-umami-event="feed-json-click">json</a></nav>`;
+const HEAD_NAV = `<nav><a href="/#works">Works</a><a href="/#archive">Archive</a><a href="/#information">Information</a></nav>`;
 function siteHead(right = HEAD_NAV): string {
-  return `<header class="head"><h1><a href="/">417am.party</a></h1>${right}</header>`;
+  return `<header class="head"><h1><a href="/">417am</a></h1>${right}</header>`;
 }
 
 function dims(e: Entry): string {
@@ -651,24 +647,32 @@ function videoTag(e: Numbered): string {
   return `<video src="${escapeHtml(e.url)}" poster="${escapeHtml(displayUrl(e))}"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}muted loop playsinline controls preload="metadata" data-no="${pad(e.no)}" aria-label="${altText(e)}"></video>`;
 }
 
-// Gallery cells: one square per piece, the whole image contained (never cropped), the number
-// and kind glyph only on hover/focus. Captions, dates and the video player live on the
-// permalink page; a video shows its poster here, marked ▶︎.
+// Wall labels, checklist style: title in italics, year, medium. The medium words are the
+// site's existing public kind descriptions (never prompts, recipes or piece names).
+const MEDIUM: Record<Kind, string> = {
+  flux: "Painterly image",
+  studio: "1-bit dithered render",
+  upload: "Image",
+  bot: "Generative image, posted by @417am1975",
+};
+const medium = (e: Entry) => `${MEDIUM[e.kind]}${isVideo(e) ? ", video" : ""}`;
+const yearOf = (e: Numbered) => localDay(e.date).slice(0, 4);
+
+// A work on the wall: contained in an even box (never cropped), bottom-aligned so the labels
+// line up, the wall label always visible. A video hangs as its poster; it plays on its page.
 function nowFigure(e: Numbered): string {
-  const v = isVideo(e);
-  const label = `${pad(e.no)} ${GLYPH[e.kind]}${v ? ` ${VIDEO_MARK}` : ""}`;
-  return `<a class="cell" id="no-${e.no}" href="/p/${e.slug}" data-umami-event="permalink-open" title="no. ${pad(e.no)} · ${kindText(e)} · ${localDay(e.date)}">
-      <img src="${escapeHtml(displayUrl(e))}" loading="lazy" decoding="async"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="${altText(e)}">
-      <span class="tag">${label}</span>
+  return `<a class="work" id="no-${e.no}" href="/p/${e.slug}" data-umami-event="permalink-open">
+      <div class="frame"><img src="${escapeHtml(displayUrl(e))}" loading="lazy" decoding="async"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="${altText(e)}"></div>
+      <p class="label"><i>417am no. ${pad(e.no)}</i>, ${yearOf(e)}<br><span class="mid">${medium(e)}</span></p>
     </a>`;
 }
 
 function botFigure(e: Numbered): string {
   const d = new Date(e.date);
   const day = isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
-  return `<a class="cell" id="no-${e.no}" href="${escapeHtml(e.url)}" data-umami-event="image-open" title="no. ${pad(e.no)} · @417am1975 · ${day}">
-      <img src="${escapeHtml(e.url)}" loading="lazy" decoding="async" alt="417am no. ${pad(e.no)}, @417am1975, ${day}${e.caption ? ": " + escapeHtml(e.caption) : ""}">
-      <span class="tag">${pad(e.no)} ${GLYPH.bot}</span>
+  return `<a class="work" id="no-${e.no}" href="${escapeHtml(e.url)}" data-umami-event="image-open">
+      <div class="frame"><img src="${escapeHtml(e.url)}" loading="lazy" decoding="async" alt="417am no. ${pad(e.no)}, @417am1975, ${day}${e.caption ? ": " + escapeHtml(e.caption) : ""}"></div>
+      <p class="label"><i>417am no. ${pad(e.no)}</i>, ${day.slice(0, 4)}<br><span class="mid">Generative image</span></p>
     </a>`;
 }
 
@@ -685,19 +689,23 @@ function galleryPage(now: Numbered[], bot: Numbered[]): string {
       image: hero,
     },
     `${siteHead()}
-    <section>
-      <div class="bar"><h2>§1 &nbsp;2026&ndash;</h2><span class="mid">● flux &middot; ■ studio${now.some(isVideo) ? ` &middot; ${VIDEO_MARK} video` : ""} &middot; newest first</span></div>
+    <section id="works">
+      <div class="bar"><h2>Works, 2026&ndash;</h2><span class="mid">Newest first</span></div>
       ${nowBlock}
     </section>
-    <section id="bot-era">
-      <div class="bar"><h2>§2 &nbsp;2017&ndash;2019</h2><span class="mid">the original hourly bot, <a href="https://x.com/417am1975" data-umami-event="outbound" data-umami-event-url="https://x.com/417am1975">@417am1975</a></span></div>
+    <section id="archive">
+      <div class="bar" id="bot-era"><h2>Archive: @417am1975, 2017&ndash;2019</h2><span class="mid">The original hourly bot, <a href="https://x.com/417am1975" data-umami-event="outbound" data-umami-event-url="https://x.com/417am1975">x.com/417am1975</a></span></div>
       <div class="grid">${bot.map(botFigure).join("\n")}</div>
     </section>
-    <footer class="colophon">
-      <p>417am is the generative art project of EJ Fox: an hourly Twitter bot that ran his after-work
-      scripts with fresh random numbers, 2017&ndash;2019 (§2), resumed in 2026 (§1). One body of work,
-      numbered oldest first; dates are the day a piece was made, Eastern time.</p>
-      <p><a href="https://ejfox.com" data-umami-event="outbound" data-umami-event-url="https://ejfox.com">ejfox.com</a></p>
+    <footer class="info" id="information">
+      <p><b>417am</b><br>EJ Fox</p>
+      <div>
+        <p>417am is the generative art project of EJ Fox: an hourly Twitter bot that ran his after-work
+        scripts with fresh random numbers, 2017&ndash;2019, resumed in 2026. One body of work, numbered
+        oldest first; dates are the day a piece was made, Eastern time.</p>
+        <p class="mid">Open daily, 4:17 am.</p>
+      </div>
+      <p><a href="/rss.xml" data-umami-event="rss-click">RSS</a><br><a href="/feed.json" data-umami-event="feed-json-click">JSON feed</a><br><a href="https://ejfox.com" data-umami-event="outbound" data-umami-event-url="https://ejfox.com">ejfox.com</a></p>
     </footer>`,
   );
 }
@@ -718,11 +726,18 @@ function piecePage(e: Numbered): string {
       image: shareUrl(e),
       ...(v ? { video: { url: e.url, type: e.mime || "video/mp4", width: e.width, height: e.height } } : {}),
     },
-    `${siteHead(`<a href="/#no-${e.no}">the full record</a>`)}
-    <div class="piece rule">
+    `${siteHead()}
+    <div class="piece">
       ${media}
-      <p>no. ${pad(e.no)} &middot; ${kindLabel(e)} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time> &middot; <a href="${escapeHtml(e.url)}" data-umami-event="${open}">${v ? "file" : "full size"}</a></p>${e.kind === "upload" && e.caption ? `
-      <p>${escapeHtml(e.caption)}</p>` : ""}
+      <div class="tomb">
+        <p>EJ Fox</p>
+        <p><i>417am no. ${pad(e.no)}</i>, ${yearOf(e)}</p>
+        <p>${medium(e)}</p>
+        ${e.width && e.height ? `<p class="mid">${e.width} &times; ${e.height} px</p>` : ""}
+        <p class="mid"><time datetime="${escapeHtml(e.date)}">${day}</time></p>${e.kind === "upload" && e.caption ? `
+        <p class="gap">${escapeHtml(e.caption)}</p>` : ""}
+        <p class="gap"><a href="${escapeHtml(e.url)}" data-umami-event="${open}">${v ? "File" : "Full size"}</a><br><a href="/#no-${e.no}">Back to works</a></p>
+      </div>
     </div>`,
   );
 }
@@ -731,8 +746,8 @@ function uploadPage(message?: { ok: boolean; text: string }): string {
   const msg = message ? `<p class="msg">${message.ok ? "◆" : "◇"} ${escapeHtml(message.text)}</p>` : "";
   return layout(
     { title: "post · 417am.party", description: "post", url: SITE + "/upload" },
-    `${siteHead(`<a href="/">the record</a>`)}
-    <div class="rule">${msg}
+    `${siteHead()}
+    <div>${msg}
     <form class="post" method="post" enctype="multipart/form-data" action="/upload">
       <div>
         <label for="image">image, or video (mp4 H.264 / webm, up to 90 MB and ${MAX_SECONDS} s)</label>
