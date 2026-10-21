@@ -1024,30 +1024,24 @@ function easternMoment(iso: string): string {
 }
 
 // Wall text, EJ-approved stories only (artbot-stories.md A1, A4, A5), in the house register.
-const NOTE_10_15 = `In place of a picture, <i>10-15</i> (2017) renders a set of orders. &ldquo;I&rsquo;m in
-  charge now... Let&rsquo;s make some art,&rdquo; the script announces, before issuing a numbered
-  sequence of drawing instructions for a human hand: &ldquo;Clear your mind,&rdquo; &ldquo;Make this as
-  unappealing as possible,&rdquo; &ldquo;Pretend this work will sell for $1000.&rdquo; It remained in
-  every multi-script rotation of the bot from October 2017 to December 2018, a standing proposition
-  about who, in this practice, does the making.`;
-const NOTE_12_20 = `From 20 December 2018 the bot was compiled to run a single script, <i>12-20</i>,
-  for the rest of its run. Each work scatters the name of a randomly chosen animal, letter by letter,
-  in red, blue and yellow on a cream ground, and sets the same name small in monospace in the corner.
-  The zoo completes a gesture the artist returned to throughout the project: the reduction of many
-  voices to one.`;
+const NOTE_10_15 = `<i>10-15</i> (2017) draws nothing itself. The script announces &ldquo;I&rsquo;m in
+  charge now... Let&rsquo;s make some art,&rdquo; then prints numbered drawing instructions for a person:
+  &ldquo;Clear your mind,&rdquo; &ldquo;Make this as unappealing as possible,&rdquo; &ldquo;Pretend this
+  work will sell for $1000.&rdquo; It was in every multi-script rotation of the bot from October 2017 to
+  December 2018.`;
+const NOTE_12_20 = `From 20 December 2018 until it stopped, the bot ran one script, <i>12-20</i>. Each
+  work scatters the name of a randomly chosen animal, letter by letter, in red, blue and yellow on a
+  cream ground. The same name is set small in monospace in the corner.`;
 const ARCHIVE_NOTES = [
-  `Across its three years the bot repeatedly contracted to a single voice. In November 2017 its
-  rotation was cut to splines alone; in December 2017 to one script, <i>12-1-3</i>; from March to May
-  2018 to <i>3-4-4</i>, which traced words such as &ldquo;love me&rdquo; and &ldquo;417.&rdquo; On 20
-  December 2018 the artist committed &ldquo;change to zoo animals,&rdquo; and from then on the compiled
-  bot ran one script, <i>12-20</i>: a randomly chosen animal name, scattered letter by letter in red,
-  blue and yellow.`,
-  `In a 2017 essay the artist described the bot as &ldquo;a slot machine with a lever being pulled again
-  and again,&rdquo; and the project as teaching &ldquo;my robot the unspoken rules of art the way
+  `The bot&rsquo;s rotation was cut to a single script several times. In November 2017 it ran splines
+  only. In December 2017 it ran <i>12-1-3</i>. From March to May 2018 it ran <i>3-4-4</i>, which traced
+  words such as &ldquo;love me&rdquo; and &ldquo;417.&rdquo; On 20 December 2018 the artist committed
+  &ldquo;change to zoo animals,&rdquo; and from then on the compiled bot ran only <i>12-20</i>.`,
+  `In a 2017 essay the artist called the bot &ldquo;a slot machine with a lever being pulled again and
+  again&rdquo; and described the project as teaching &ldquo;my robot the unspoken rules of art the way
   you&rsquo;d teach a child.&rdquo; The essay proposes a genetic algorithm in which faves and retweets
-  would determine which &ldquo;DNA&rdquo; survives. It ends at a heading, &ldquo;Building your art robot
-  a memory,&rdquo; followed by &ldquo;To be continued...&rdquo; No later commit adds a memory or a
-  fitness loop; the work remains, deliberately or not, unfinished.`,
+  decide which &ldquo;DNA&rdquo; survives. It ends with the heading &ldquo;Building your art robot a
+  memory,&rdquo; followed by &ldquo;To be continued...&rdquo; No later commit adds a memory.`,
 ];
 
 function storyNote(m: ArchiveMeta | undefined): string {
