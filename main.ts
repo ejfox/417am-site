@@ -17,13 +17,15 @@
 //   GET  /feed.json       JSON Feed 1.1, same items
 //   GET  /upload          basic-auth upload form (UPLOAD_PASSWORD)
 //   POST /upload          basic-auth, Cloudinary 417am/uploads, kind "upload" (image or video)
-//   POST   /api/post            Bearer POST_TOKEN: multipart {image|video, id, kind, date?, publish_at?}
+//   POST   /api/post            Bearer POST_TOKEN: multipart {image|video, id, kind, date?, publish_at?, materials?}
+//   POST   /api/materials       Bearer: JSON {slug|id, materials}: attach a piece's art supplies
 //   DELETE /api/post/:id        Bearer: remove from the manifest (Cloudinary asset is kept)
 //   PATCH  /api/post/:id        Bearer: JSON {publish_at: iso|null} (reschedule a drip item)
 //   GET    /api/schedule        Bearer: every era-"now" entry incl. not-yet-public ones
 //   GET  /media/:name     dev only (MEDIA_DIR set): files stored locally instead of Cloudinary
 //
-// PRIVACY: new entries carry media, date and kind only. Never prompts, recipes, note names
+// PRIVACY: new entries carry media, date, kind and (optionally) allow-listed materials: tool
+// settings such as dither, steps, seed (MATERIAL_RULES). Never prompts, recipes, note names
 // or piece names. The poster's `id` is private: used only for idempotency + removal, never
 // rendered; public URLs use a random `slug`. PNG text/exif chunks are stripped before upload
 // (generated PNGs embed their prompt). Videos are re-muxed with ffmpeg with every metadata
@@ -90,7 +92,11 @@ type Entry = {
   duration?: number;
   poster?: string;
   poster_public_id?: string;
+  // the piece's own art supplies (dither, steps, ...): allow-listed, see MATERIAL_RULES
+  materials?: Materials;
 };
+
+type Materials = Record<string, string | number | boolean>;
 
 type Numbered = Entry & { no: number };
 
@@ -757,8 +763,165 @@ const SUPPLIES: Record<Kind, string[]> = {
   bot: ["Generative image, posted by @417am1975"],
 };
 const DITHERS = "Bayer, blue noise, Atkinson, Floyd–Steinberg, halftone, line, crosshatch, stipple, threshold";
-const medium = (e: Entry) => `${MEDIUM[e.kind]}${isVideo(e) ? ", video" : ""}`;
-const supplies = (e: Entry) => [...SUPPLIES[e.kind], ...(isVideo(e) ? ["Video, H.264"] : [])];
+
+// ---- per-piece materials (2026-10-20) ----------------------------------------------------
+// What the poster sends with each piece: settings only, like an art-supplies list. STRICT
+// ALLOW-LIST per kind: each key has a type and a range/enum/pattern; the output object is built
+// key by key and anything else (a prompt, a path, a name) is dropped, never stored. The PC side
+// (post_417am.py materials_for) builds from the same list; this is the second gate.
+type Rule =
+  | { t: "int"; min: number; max: number }
+  | { t: "num"; min: number; max: number }
+  | { t: "bool" }
+  | { t: "enum"; of: readonly string[] }
+  | { t: "intof"; of: readonly number[] }
+  | { t: "re"; re: RegExp; max: number };
+const SIZE: Rule = { t: "int", min: 1, max: 16384 };
+const SEED: Rule = { t: "int", min: 0, max: Number.MAX_SAFE_INTEGER };
+const DITHER_NAME: Record<string, string> = {
+  threshold: "Threshold", bayer2: "Bayer 2×2", bayer4: "Bayer 4×4", bayer8: "Bayer 8×8",
+  blue: "Blue-noise", atkinson: "Atkinson", floyd: "Floyd–Steinberg", halftone: "Halftone",
+  lines: "Line", crosshatch: "Crosshatch", stipple: "Stipple", raw: "",
+};
+const SAMPLER_NAME: Record<string, string> = {
+  euler: "Euler", euler_a: "Euler a", heun: "Heun", dpm2: "DPM2", "dpm++2s_a": "DPM++ 2S a",
+  "dpm++2m": "DPM++ 2M", "dpm++2mv2": "DPM++ 2M v2", ipndm: "iPNDM", ipndm_v: "iPNDM-v",
+  lcm: "LCM", ddim_trailing: "DDIM trailing", tcd: "TCD",
+};
+const FLUX_MODEL_NAME: Record<string, string> = { "flux2-klein-9b": "FLUX.2 [klein] 9B" };
+const MATERIAL_RULES: Partial<Record<Kind, Record<string, Rule>>> = {
+  studio: {
+    dither: { t: "enum", of: Object.keys(DITHER_NAME) },
+    bits: { t: "intof", of: [1, 3, 8, 16] },
+    px: { t: "int", min: 1, max: 16 },
+    render_w: SIZE, render_h: SIZE, out_w: SIZE, out_h: SIZE,
+    render_s: { t: "int", min: 0, max: 86400 },
+    seed: SEED,
+    red: { t: "re", re: /^#[0-9a-f]{6}$/, max: 7 },
+    crt: { t: "bool" },
+  },
+  flux: {
+    model: { t: "enum", of: Object.keys(FLUX_MODEL_NAME) },
+    quant: { t: "re", re: /^(Q[2-8](_K)?(_[SML])?|Q8_0|F16|BF16)$/, max: 8 },
+    steps: { t: "int", min: 1, max: 500 },
+    sampler: { t: "re", re: /^[a-z0-9+_]{1,24}$/, max: 24 },
+    cfg: { t: "num", min: 0, max: 50 },
+    guidance: { t: "num", min: 0, max: 50 },
+    seed: SEED,
+    gen_w: SIZE, gen_h: SIZE,
+    img2img: { t: "bool" },
+    strength: { t: "num", min: 0, max: 1 },
+    source: { t: "enum", of: ["studio"] }, // img2img seeded from a studio render (never which)
+  },
+};
+const MAX_MATERIALS_JSON = 2048;
+
+// -> the allow-listed subset (null when nothing survives). `raw` is a JSON string or an object.
+function cleanMaterials(kind: Kind, raw: unknown): Materials | null {
+  const rules = MATERIAL_RULES[kind];
+  if (!rules) return null;
+  let o: unknown = raw;
+  if (typeof raw === "string") {
+    if (raw.length > MAX_MATERIALS_JSON) return null;
+    try {
+      o = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o)) return null;
+  const src = o as Record<string, unknown>;
+  const out: Materials = {};
+  for (const [k, r] of Object.entries(rules)) {
+    if (!Object.hasOwn(src, k)) continue;
+    const v = src[k];
+    if (r.t === "bool") {
+      if (typeof v === "boolean") out[k] = v;
+    } else if (r.t === "int" || r.t === "num") {
+      if (typeof v === "number" && Number.isFinite(v) && v >= r.min && v <= r.max &&
+        (r.t === "num" || Number.isInteger(v))) out[k] = r.t === "num" ? Math.round(v * 1000) / 1000 : v;
+    } else if (r.t === "enum") {
+      if (typeof v === "string" && r.of.includes(v)) out[k] = v;
+    } else if (r.t === "intof") {
+      if (typeof v === "number" && r.of.includes(v)) out[k] = v;
+    } else if (typeof v === "string" && v.length <= r.max && r.re.test(v)) {
+      out[k] = v;
+    }
+  }
+  if (out.img2img !== true) { // strength/source only mean something for img2img
+    delete out.strength;
+    delete out.source;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+const mStr = (m: Materials, k: string) => (typeof m[k] === "string" ? m[k] as string : "");
+const mNum = (m: Materials, k: string) => (typeof m[k] === "number" ? m[k] as number : undefined);
+const dec1 = (n: number) => (Number.isInteger(n) ? n.toFixed(1) : String(n));
+
+// the dither phrase for a studio piece: "Atkinson dither" / "undithered" / ""
+function ditherPhrase(m: Materials): string {
+  const d = mStr(m, "dither");
+  if (!d) return "";
+  return d === "raw" ? "undithered" : `${DITHER_NAME[d]} dither`;
+}
+
+// The wall label, one line. Per-piece when the piece has materials, else the kind's MEDIUM.
+function medium(e: Entry): string {
+  const m = e.materials;
+  let s = MEDIUM[e.kind];
+  if (m && e.kind === "studio" && ditherPhrase(m)) s = `Blender 5.2, Cycles; ${ditherPhrase(m)}`;
+  if (m && e.kind === "flux") {
+    const model = FLUX_MODEL_NAME[mStr(m, "model")] || "FLUX.2 [klein] 9B";
+    const steps = mNum(m, "steps");
+    s = [model, m.img2img === true ? "img2img" : "", steps ? `${steps} steps` : ""].filter(Boolean).join(", ");
+  }
+  return `${s}${isVideo(e) ? ", video" : ""}`;
+}
+
+// The piece page's specifics, one plain-language line each, after the generic SUPPLIES.
+function materialLines(e: Entry): string[] {
+  const m = e.materials;
+  if (!m) return [];
+  const lines: string[] = [];
+  const x = (w?: number, h?: number) => (w && h ? `${w} × ${h}` : "");
+  if (e.kind === "studio") {
+    const bits = mNum(m, "bits"), px = mNum(m, "px"), red = mStr(m, "red");
+    const depth = bits === 1 ? "1-bit (black, white)" : bits === 3 ? `3-level (black, white, red${red ? " " + red : ""})`
+      : bits ? `${bits}-bit grayscale` : "";
+    const d = ditherPhrase(m);
+    const head = d === "undithered" ? "Undithered, film-style finish" : d;
+    lines.push([head && head[0].toUpperCase() + head.slice(1), d === "undithered" ? "" : depth,
+      px && px > 1 && d !== "undithered" ? `${px}× nearest-neighbor` : ""].filter(Boolean).join(", "));
+    const rs = mNum(m, "render_s"), rr = x(mNum(m, "render_w"), mNum(m, "render_h"));
+    if (rr || rs !== undefined) lines.push(`Rendered${rr ? " " + rr : ""}${rs !== undefined ? ` in ${rs} s` : ""}`);
+    if (m.crt === true) lines.push("CRT curvature");
+    if (mNum(m, "seed") !== undefined) lines.push(`Seed ${mNum(m, "seed")}`);
+  } else if (e.kind === "flux") {
+    const steps = mNum(m, "steps"), cfg = mNum(m, "cfg"), g = mNum(m, "guidance"), seed = mNum(m, "seed");
+    const sampler = mStr(m, "sampler");
+    lines.push([steps ? `${steps} steps` : "", sampler ? SAMPLER_NAME[sampler] || sampler : "",
+      cfg !== undefined ? `CFG ${dec1(cfg)}` : "", g !== undefined ? `guidance ${dec1(g)}` : "",
+      seed !== undefined ? `seed ${seed}` : ""].filter(Boolean).join(", "));
+    const gs = x(mNum(m, "gen_w"), mNum(m, "gen_h"));
+    if (gs && gs !== x(e.width, e.height)) lines.push(`Generated at ${gs}`); // else the px line says it
+    const st = mNum(m, "strength");
+    if (m.img2img === true) {
+      lines.push(`img2img${mStr(m, "source") === "studio" ? " from a studio render" : ""}${st !== undefined ? `, strength ${st.toFixed(2)}` : ""}`);
+    } else if (m.img2img === false) lines.push("Text-to-image");
+  }
+  return lines.filter(Boolean);
+}
+
+// Generic supplies, then the piece's own. A studio piece that names its dither drops the
+// generic "1-bit dither" line (wrong for 3-level and undithered pieces).
+function supplies(e: Entry): string[] {
+  const own = materialLines(e);
+  const base = e.kind === "studio" && e.materials && ditherPhrase(e.materials)
+    ? SUPPLIES.studio.filter((s) => !/dither/.test(s))
+    : SUPPLIES[e.kind];
+  return [...base, ...(isVideo(e) ? ["Video, H.264"] : []), ...own];
+}
 const yearOf = (e: Numbered) => localDay(e.date).slice(0, 4);
 
 // A work on the wall: contained in an even box (never cropped), bottom-aligned so the labels
@@ -904,8 +1067,9 @@ function itemHtml(e: Numbered): string {
   // No inline style: readers strip it and the W3C validator flags it. Studio stays a PNG.
   // Videos: a <video> for readers that play it, the linked poster frame for those that don't.
   const still = `<a href="${SITE}/p/${e.slug}"><img src="${xml(shareUrl(e))}" alt="${altText(e)}"></a>`;
-  if (!isVideo(e)) return `<p>${still}</p>`;
-  return `<p><video src="${xml(e.url)}" poster="${xml(shareUrl(e))}" controls muted loop playsinline preload="metadata">${still}</video></p>`;
+  const label = `<p>${xml(medium(e))}</p>`;
+  if (!isVideo(e)) return `<p>${still}</p>${label}`;
+  return `<p><video src="${xml(e.url)}" poster="${xml(shareUrl(e))}" controls muted loop playsinline preload="metadata">${still}</video></p>${label}`;
 }
 
 const itemTitle = (e: Numbered) => `no. ${pad(e.no)} · ${kindText(e)} · ${localDay(e.date)}`;
@@ -960,6 +1124,7 @@ function jsonFeed(items: Numbered[]) {
       url: `${SITE}/p/${e.slug}`,
       title: itemTitle(e),
       content_html: itemHtml(e),
+      summary: medium(e),
       image: shareUrl(e),
       date_published: new Date(publicAt(e)).toISOString(),
       ...(isVideo(e)
@@ -1125,6 +1290,9 @@ app.post("/api/post", async (c) => {
   if (!(file instanceof File) || file.size === 0) return c.json({ error: asVideo ? "no video" : "no image" }, 400);
   if (asVideo && file.size > MAX_VIDEO) return c.json({ error: "video over 90 MB" }, 413);
   if (!asVideo && file.size > MAX_UPLOAD) return c.json({ error: "image over 9 MB" }, 413);
+  // optional, never fatal: whatever fails the allow-list is dropped
+  const matRaw = form.get("materials");
+  const materials = typeof matRaw === "string" ? cleanMaterials(kind as Kind, matRaw) : null;
   const pubRaw = form.get("publish_at");
   const publish_at = pubRaw ? isoOrNull(pubRaw) : null;
   if (pubRaw && !publish_at) return c.json({ error: "bad publish_at" }, 400);
@@ -1158,6 +1326,7 @@ app.post("/api/post", async (c) => {
       posted_at: nowIso,
       ...(publish_at ? { publish_at } : {}),
       ...fields,
+      ...(materials ? { materials } : {}),
     };
     const stored = await mutateLive((entries) => {
       const dup = entries.find((e) => e.id === id);
@@ -1211,6 +1380,36 @@ app.patch("/api/post/:id", async (c) => {
   });
   if (!e) return c.json({ error: "not found" }, 404);
   return c.json({ ok: true, publish_at: e.publish_at ?? null });
+});
+
+// Attach / replace one entry's materials. JSON {slug | id, materials}; the same allow-list as
+// /api/post. Materials that come out empty are refused (400) rather than wiping what's there.
+app.post("/api/materials", async (c) => {
+  if (!checkBearer(c.req.raw)) return c.json({ error: "unauthorized" }, 401);
+  let body: { slug?: unknown; id?: unknown; materials?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "expected JSON" }, 400);
+  }
+  const slug = typeof body.slug === "string" && /^[0-9a-f]{12}$/.test(body.slug) ? body.slug : null;
+  const id = typeof body.id === "string" && ID_RE.test(body.id) ? body.id : null;
+  if (!slug && !id) return c.json({ error: "slug or id required" }, 400);
+  if (JSON.stringify(body.materials ?? null).length > MAX_MATERIALS_JSON) {
+    return c.json({ error: "materials too large" }, 413);
+  }
+  const r = await mutateLive((entries) => {
+    const x = entries.find((y) => y.era === "now" && (slug ? y.slug === slug : y.id === id));
+    if (!x) return { status: 404 as const };
+    const m = cleanMaterials(x.kind, body.materials);
+    if (!m) return { status: 400 as const };
+    x.materials = m;
+    return { status: 200 as const, slug: x.slug, materials: m };
+  });
+  if (r.status === 404) return c.json({ error: "not found" }, 404);
+  if (r.status === 400) return c.json({ error: "no allowed materials" }, 400);
+  console.log(`api materials ${r.slug}`);
+  return c.json({ ok: true, slug: r.slug, materials: r.materials });
 });
 
 app.get("/api/schedule", async (c) => {

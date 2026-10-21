@@ -33,8 +33,19 @@ publish_at?, public_id, width, height, bytes, format}`.
 - `date` = when the piece was made (shown on the page). `publish_at` (optional) = the moment it
   becomes public; until then it is invisible on the page, permalinks and both feeds. The §1 order
   is by public moment (`publish_at`, else `posted_at`).
-- **Privacy:** new work carries image, date and kind only. No prompts, recipes, notes or piece
-  names, ever. PNG text/exif chunks are stripped server-side before upload.
+- **Privacy:** new work carries image, date, kind and optional `materials`. No prompts, recipes,
+  notes or piece names, ever. PNG text/exif chunks are stripped server-side before upload.
+
+### Materials
+
+`materials` = one piece's art supplies, a flat object checked against a strict per-kind
+allow-list (`MATERIAL_RULES`: type + range/enum/pattern per key; everything else is dropped, a
+2 KB cap). Studio: `dither` (threshold, bayer2/4/8, blue, atkinson, floyd, halftone, lines,
+crosshatch, stipple, raw), `bits` (1, 3, 8, 16), `px`, `render_w/h`, `out_w/h`, `render_s`,
+`seed`, `red` (hex, 3-level pieces), `crt`. Flux: `model` (flux2-klein-9b), `quant`, `steps`,
+`sampler`, `cfg`, `guidance`, `seed`, `gen_w/h`, `img2img`, `strength`, `source` (only
+`"studio"`: seeded from a studio render, never which). The wall label and the piece page's
+checklist read it; the feeds carry the wall label.
 
 ### Video
 
@@ -69,7 +80,8 @@ video, `poster` its first non-black frame as a stripped PNG). Accepted on `/api/
 | `GET /rss.xml` | public | RSS 2.0, §1 only, live entries only, guid `417am.party:<slug>` |
 | `GET /feed.json` | public | JSON Feed 1.1, same items |
 | `GET/POST /upload` | Basic (`UPLOAD_PASSWORD`) | hand posting, Cloudinary `417am/uploads`, kind `upload`, caption shown |
-| `POST /api/post` | Bearer (`POST_TOKEN`) | multipart `image` (PNG) or `video` (mp4/webm), `id`, `kind` (flux\|studio; video also upload), `date?`, `publish_at?`. Cloudinary `417am/now/<kind>`. Idempotent on `id` (a repeat returns `existed: true`, no upload). |
+| `POST /api/post` | Bearer (`POST_TOKEN`) | multipart `image` (PNG) or `video` (mp4/webm), `id`, `kind` (flux\|studio; video also upload), `date?`, `publish_at?`, `materials?` (JSON, see Materials). Cloudinary `417am/now/<kind>`. Idempotent on `id` (a repeat returns `existed: true`, no upload). |
+| `POST /api/materials` | Bearer | JSON `{slug \| id, materials}`: attach/replace a piece's materials (same allow-list; nothing allowed = 400, entry untouched) |
 | `DELETE /api/post/:id` | Bearer | removes the entry from the manifest; the Cloudinary asset is kept |
 | `PATCH /api/post/:id` | Bearer | JSON `{publish_at: iso \| null}`: reschedule a drip item |
 | `GET /api/schedule` | Bearer | every live-manifest entry incl. not-yet-public ones |
