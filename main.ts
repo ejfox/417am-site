@@ -574,6 +574,46 @@ const PAGE_STYLES = `
   }
   button { padding: 10px; background: var(--fg); color: var(--bg); border: none; border-radius: 0; cursor: pointer; }
   .msg { padding-top: 16px; }
+
+  /* ---- 4:17 am: the party (PARTY_SCRIPT toggles html.party). Hue/invert cycles are slow, so
+     no flashing over 3/s; reduced motion keeps the color flip only. */
+  .party-marquee { display: none; }
+  html.party { --bg: #000; --fg: #fff; --mid: #ff3b8d; --hair: #333; }
+  html.party, html.party body { background: #000; transition: background 400ms; }
+  html.party .party-marquee {
+    display: block; position: fixed; left: 0; right: 0; top: 40vh; z-index: 5; overflow: hidden;
+    pointer-events: none; mix-blend-mode: difference; font-weight: 900; font-size: 18vw; line-height: 1;
+    white-space: nowrap; color: #fff; letter-spacing: -0.04em;
+  }
+  html.party .party-marquee span { display: inline-block; animation: party-marquee 9s linear infinite; }
+  html.party .work, html.party .piece img, html.party .piece video {
+    animation: party-float var(--dur, 4s) ease-in-out var(--delay, 0s) infinite alternate;
+  }
+  html.party .frame img, html.party .piece img {
+    animation-name: party-float, party-color;
+    animation-duration: var(--dur, 4s), 7s;
+    animation-timing-function: ease-in-out, linear;
+    animation-iteration-count: infinite, infinite;
+    animation-direction: alternate, normal;
+    outline-color: #ff3b8d;
+  }
+  html.party .label i { font-weight: 900; color: #ff3b8d; }
+  html.party .head h1 { animation: party-wobble 1.4s ease-in-out infinite alternate; color: #fff; }
+  @keyframes party-float {
+    from { transform: translate(0, 0) rotate(0deg) scale(1); }
+    to { transform: translate(var(--dx), var(--dy)) rotate(var(--rot)) scale(1.06); }
+  }
+  /* a full hue spin at high saturation + contrast (an invert phase went muddy gray) */
+  @keyframes party-color {
+    0% { filter: hue-rotate(var(--hue, 0deg)) saturate(2.4) contrast(1.35); }
+    100% { filter: hue-rotate(calc(var(--hue, 0deg) + 360deg)) saturate(2.4) contrast(1.35); }
+  }
+  @keyframes party-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  @keyframes party-wobble { from { transform: rotate(-3deg) scale(1); } to { transform: rotate(3deg) scale(1.15); } }
+  @media (prefers-reduced-motion: reduce) {
+    html.party *, html.party .party-marquee span { animation: none !important; transition: none !important; }
+    html.party .party-marquee { display: none; }
+  }
 `;
 
 function escapeHtml(s: string): string {
@@ -598,6 +638,51 @@ type Meta = {
   image?: string;
   video?: { url: string; type: string; width?: number; height?: number };
 };
+
+// 4:17 am (EJ 2026-10-20: "make the site go absolutely crazy at 417am every day"): for the whole
+// minute 04:17 America/New_York (the site's clock, one shared nightly opening) the white cube
+// becomes a black-box party: works come off the wall and drift/spin, colors cycle, a 4:17 AM
+// marquee runs. Snaps back at 04:18. ?party forces it for previews. Safety: nothing flashes
+// faster than 3/s (WCAG 2.3.1); prefers-reduced-motion gets the color flip, no movement.
+const PARTY_SCRIPT = `<div class="party-marquee" aria-hidden="true"><span>4:17 AM &nbsp; 4:17 AM &nbsp; 4:17 AM &nbsp; 4:17 AM &nbsp; 4:17 AM &nbsp; 4:17 AM &nbsp; 4:17 AM &nbsp; 4:17 AM &nbsp;</span></div>
+<script>
+(() => {
+  const forced = new URLSearchParams(location.search).has("party");
+  const et = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "numeric", hour12: false });
+  const isParty = () => {
+    if (forced) return true;
+    const p = Object.fromEntries(et.formatToParts(new Date()).map((x) => [x.type, x.value]));
+    return Number(p.hour) % 24 === 4 && Number(p.minute) === 17;
+  };
+  const root = document.documentElement;
+  const labels = new Map();
+  let on = false, logged = false;
+  function start() {
+    on = true;
+    document.querySelectorAll(".work, .piece img, .piece video").forEach((el, i) => {
+      // each work gets its own rhythm: drift, spin, bob
+      el.style.setProperty("--dx", (Math.random() * 60 - 30).toFixed(1) + "px");
+      el.style.setProperty("--dy", (Math.random() * 60 - 30).toFixed(1) + "px");
+      el.style.setProperty("--rot", (Math.random() * 30 - 15).toFixed(1) + "deg");
+      el.style.setProperty("--dur", (2.5 + Math.random() * 4).toFixed(2) + "s");
+      el.style.setProperty("--delay", (-Math.random() * 5).toFixed(2) + "s");
+      el.style.setProperty("--hue", Math.floor(Math.random() * 360) + "deg");
+    });
+    document.querySelectorAll(".label i").forEach((i) => { labels.set(i, i.textContent); i.textContent = "NOW"; });
+    root.classList.add("party");
+    if (!logged && window.umami) { try { umami.track("party-417", { forced }); } catch (_) {} logged = true; }
+  }
+  function stop() {
+    on = false;
+    root.classList.remove("party");
+    labels.forEach((t, i) => { i.textContent = t; });
+    labels.clear();
+  }
+  const tick = () => { const p = isParty(); if (p && !on) start(); else if (!p && on) stop(); };
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>`;
 
 function layout(meta: Meta, body: string): string {
   const m = (p: string, v: string) => `<meta property="${p}" content="${escapeHtml(v)}">`;
@@ -628,7 +713,7 @@ function layout(meta: Meta, body: string): string {
   <style>${PAGE_STYLES}</style>
   ${UMAMI_TAG}
 </head>
-<body><div class="wrap">${body}</div>${UMAMI_DIVIDER}${body.includes("<video") ? UMAMI_VIDEO : ""}</body>
+<body><div class="wrap">${body}</div>${PARTY_SCRIPT}${UMAMI_DIVIDER}${body.includes("<video") ? UMAMI_VIDEO : ""}</body>
 </html>`;
 }
 
