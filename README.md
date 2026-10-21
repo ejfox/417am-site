@@ -19,6 +19,8 @@ Two manifests, on purpose:
 | file | what | in git |
 |---|---|---|
 | `data/art.json` | the 2017–2019 bot archive, `[{url, caption, date}]`. **Read-only seed: never rewritten.** | yes |
+| `data/archive-meta.json` | per-piece notes for the bot archive, keyed by art.json `url`: script, seed as tweeted, tweet id/text, `#bot2bot` tag, repo path, commit, GitHub link. Drives `/a/:no`. Generated: `python3 tools/build-archive-meta.py <archive-tweets.tsv> <twitter-artbot clone>` | yes |
+| `data/artscripts/*.coffee` | the source of each referenced script, as committed (same tool; `REDACT` strips lines that must not be republished) | yes |
 | `$LIVE_MANIFEST` | the new work. VPS: `/data2/417am-data/now.json` (outside the repo). Local default: `data/live/now.json` (gitignored). | **no** |
 
 The live manifest lives outside git because the deploy runs `git reset --hard`, which would
