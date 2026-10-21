@@ -506,13 +506,6 @@ const VIDEO_MARK = "▶︎";
 const kindLabel = (e: Entry) => `${GLYPH[e.kind]} ${e.kind}${isVideo(e) ? ` &middot; ${VIDEO_MARK} video` : ""}`;
 const kindText = (e: Entry) => `${GLYPH[e.kind]} ${e.kind}${isVideo(e) ? ` · ${VIDEO_MARK} video` : ""}`;
 
-const NOW_PROSE =
-  "417am, continued. New generative pieces, added as they are chosen; the newest is first. " +
-  "Two kinds: ● flux, painterly images; ■ studio, 1-bit dithered renders.";
-const BOT_PROSE =
-  "A generative Twitter bot that tweeted randomized art every hour for a couple of years. " +
-  "I would write a new art script after work to unwind and drop it in a folder; the bot ran " +
-  "it with a fresh set of random numbers and tweeted whatever came out.";
 const FEED_DESC =
   "417am is EJ Fox's generative art project. It began in 2017 as @417am1975, a Twitter bot " +
   "that tweeted his after-work art scripts every hour with fresh random numbers; that archive " +
@@ -533,27 +526,41 @@ const PAGE_STYLES = `
   .wrap { padding: 0 16px; }
   @media (min-width: 900px) { .wrap { padding: 0 32px; } }
   .rule { border-top: 1px solid var(--mid); }
-  .head { padding: 32px 0 16px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 2ch; }
+  .head { padding: 24px 0 16px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 3ch; }
   .head h1 { font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+  .head nav { margin-left: auto; display: flex; gap: 2ch; }
   .mid { color: var(--mid); }
-  .sec { padding: 48px 0 16px; }
-  .sec h2 { font-weight: 700; }
-  .sec p { margin-top: 8px; max-width: 72ch; }
-  .break { margin-top: 64px; border-top: 1px solid var(--fg); }
+  /* one hairline row per section: title left, legend right */
+  .bar {
+    display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 3ch;
+    padding: 32px 0 8px; border-top: 1px solid var(--mid);
+  }
+  .bar h2 { font-weight: 700; }
+  /* the record: uniform square cells on 1px rules, the whole piece always visible */
   .grid {
-    display: grid; grid-template-columns: 1fr;
+    display: grid; grid-template-columns: repeat(2, 1fr);
     border-top: 1px solid var(--mid); border-left: 1px solid var(--mid);
   }
-  @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
-  figure { border-right: 1px solid var(--mid); border-bottom: 1px solid var(--mid); }
-  figure img, figure video { display: block; width: 100%; height: auto; background: var(--bg); }
+  @media (min-width: 700px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+  @media (min-width: 1100px) { .grid { grid-template-columns: repeat(4, 1fr); } }
+  @media (min-width: 1600px) { .grid { grid-template-columns: repeat(6, 1fr); } }
+  .cell {
+    position: relative; display: block; aspect-ratio: 1; overflow: hidden; background: var(--bg);
+    border-right: 1px solid var(--mid); border-bottom: 1px solid var(--mid);
+  }
+  .cell img { display: block; width: 100%; height: 100%; object-fit: contain; }
   img.crisp, video.crisp { image-rendering: crisp-edges; image-rendering: pixelated; }
-  figcaption { padding: 8px 12px 12px; border-top: 1px solid var(--mid); }
-  figcaption a { text-decoration: none; }
-  figcaption a:hover { text-decoration: underline; }
+  .cell .tag {
+    position: absolute; left: 0; bottom: 0; padding: 2px 8px;
+    background: var(--bg); border-top: 1px solid var(--mid); border-right: 1px solid var(--mid);
+    opacity: 0; transition: opacity 120ms;
+  }
+  .cell:hover .tag, .cell:focus-visible .tag { opacity: 1; }
+  .cell:focus-visible { outline: 1px solid var(--fg); outline-offset: -1px; }
   .empty { padding: 16px 0 32px; color: var(--mid); }
-  .colophon { padding: 48px 0 64px; }
-  .colophon p { margin-top: 8px; max-width: 72ch; }
+  .colophon { padding: 32px 0 64px; margin-top: 48px; border-top: 1px solid var(--mid); color: var(--mid); }
+  .colophon p { max-width: 72ch; }
+  .colophon p + p { margin-top: 8px; }
   .piece { padding: 16px 0 48px; }
   .piece img, .piece video { display: block; max-width: 100%; max-height: 88vh; width: auto; height: auto; margin: 0 auto; }
   .piece p { margin-top: 12px; }
@@ -626,7 +633,9 @@ function layout(meta: Meta, body: string): string {
 </html>`;
 }
 
-function siteHead(right = `<span class="mid">a record of generative work, 2017&ndash;</span>`): string {
+const HEAD_NAV = `<span class="mid">a record of generative work, 2017&ndash;</span>
+    <nav><a href="/rss.xml" data-umami-event="rss-click">rss</a><a href="/feed.json" data-umami-event="feed-json-click">json</a></nav>`;
+function siteHead(right = HEAD_NAV): string {
   return `<header class="head"><h1><a href="/">417am.party</a></h1>${right}</header>`;
 }
 
@@ -642,26 +651,25 @@ function videoTag(e: Numbered): string {
   return `<video src="${escapeHtml(e.url)}" poster="${escapeHtml(displayUrl(e))}"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}muted loop playsinline controls preload="metadata" data-no="${pad(e.no)}" aria-label="${altText(e)}"></video>`;
 }
 
+// Gallery cells: one square per piece, the whole image contained (never cropped), the number
+// and kind glyph only on hover/focus. Captions, dates and the video player live on the
+// permalink page; a video shows its poster here, marked ▶︎.
 function nowFigure(e: Numbered): string {
-  const day = localDay(e.date);
-  const cap = e.kind === "upload" && e.caption ? ` &middot; ${escapeHtml(e.caption)}` : "";
-  const media = isVideo(e)
-    ? videoTag(e)
-    : `<a href="/p/${e.slug}" data-umami-event="permalink-open"><img src="${escapeHtml(displayUrl(e))}" loading="lazy" decoding="async"${dims(e)}
-        ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="${altText(e)}"></a>`;
-  return `<figure id="no-${e.no}">
-      ${media}
-      <figcaption><a href="/p/${e.slug}" data-umami-event="permalink-open">no.${pad(e.no)}</a> &middot; ${kindLabel(e)} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time>${cap}</figcaption>
-    </figure>`;
+  const v = isVideo(e);
+  const label = `${pad(e.no)} ${GLYPH[e.kind]}${v ? ` ${VIDEO_MARK}` : ""}`;
+  return `<a class="cell" id="no-${e.no}" href="/p/${e.slug}" data-umami-event="permalink-open" title="no. ${pad(e.no)} · ${kindText(e)} · ${localDay(e.date)}">
+      <img src="${escapeHtml(displayUrl(e))}" loading="lazy" decoding="async"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}alt="${altText(e)}">
+      <span class="tag">${label}</span>
+    </a>`;
 }
 
 function botFigure(e: Numbered): string {
   const d = new Date(e.date);
   const day = isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
-  return `<figure id="no-${e.no}">
-      <img src="${escapeHtml(e.url)}" loading="lazy" decoding="async" alt="417am no. ${pad(e.no)}, @417am1975, ${day}">
-      <figcaption>no. ${pad(e.no)} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time> &middot; <span class="mid">${escapeHtml(e.caption || "")}</span></figcaption>
-    </figure>`;
+  return `<a class="cell" id="no-${e.no}" href="${escapeHtml(e.url)}" data-umami-event="image-open" title="no. ${pad(e.no)} · @417am1975 · ${day}">
+      <img src="${escapeHtml(e.url)}" loading="lazy" decoding="async" alt="417am no. ${pad(e.no)}, @417am1975, ${day}${e.caption ? ": " + escapeHtml(e.caption) : ""}">
+      <span class="tag">${pad(e.no)} ${GLYPH.bot}</span>
+    </a>`;
 }
 
 function galleryPage(now: Numbered[], bot: Numbered[]): string {
@@ -678,28 +686,18 @@ function galleryPage(now: Numbered[], bot: Numbered[]): string {
     },
     `${siteHead()}
     <section>
-      <div class="sec rule">
-        <h2>§1 &nbsp;417am, 2026&ndash;</h2>
-        <p>${escapeHtml(NOW_PROSE)}${now.some(isVideo) ? ` ${VIDEO_MARK} marks a moving piece.` : ""}</p>
-      </div>
+      <div class="bar"><h2>§1 &nbsp;2026&ndash;</h2><span class="mid">● flux &middot; ■ studio${now.some(isVideo) ? ` &middot; ${VIDEO_MARK} video` : ""} &middot; newest first</span></div>
       ${nowBlock}
     </section>
-    <section>
-      <div class="break" id="bot-era"></div>
-      <div class="sec">
-        <h2>§2 &nbsp;417am, 2017&ndash;2019 &middot; the original @417am1975 bot</h2>
-        <p>${escapeHtml(BOT_PROSE)} <a href="https://x.com/417am1975" data-umami-event="outbound" data-umami-event-url="https://x.com/417am1975">x.com/417am1975</a></p>
-      </div>
+    <section id="bot-era">
+      <div class="bar"><h2>§2 &nbsp;2017&ndash;2019</h2><span class="mid">the original hourly bot, <a href="https://x.com/417am1975" data-umami-event="outbound" data-umami-event-url="https://x.com/417am1975">@417am1975</a></span></div>
       <div class="grid">${bot.map(botFigure).join("\n")}</div>
     </section>
     <footer class="colophon">
-      <h2>§3 &nbsp;colophon</h2>
-      <p>417am is the generative art project of EJ Fox. It began in 2017 as @417am1975, an
-      hourly Twitter bot that ran his after-work scripts with fresh random numbers (§2), and
-      resumed in 2026 (§1). Entries are numbered as one body of work, oldest first. Dates are
-      the day each piece was made, Eastern time.</p>
-      <p>Feeds carry the new work only: <a href="/rss.xml" data-umami-event="rss-click">rss</a>, <a href="/feed.json" data-umami-event="feed-json-click">json feed</a>.
-      More at <a href="https://ejfox.com" data-umami-event="outbound" data-umami-event-url="https://ejfox.com">ejfox.com</a>.</p>
+      <p>417am is the generative art project of EJ Fox: an hourly Twitter bot that ran his after-work
+      scripts with fresh random numbers, 2017&ndash;2019 (§2), resumed in 2026 (§1). One body of work,
+      numbered oldest first; dates are the day a piece was made, Eastern time.</p>
+      <p><a href="https://ejfox.com" data-umami-event="outbound" data-umami-event-url="https://ejfox.com">ejfox.com</a></p>
     </footer>`,
   );
 }
@@ -723,7 +721,8 @@ function piecePage(e: Numbered): string {
     `${siteHead(`<a href="/#no-${e.no}">the full record</a>`)}
     <div class="piece rule">
       ${media}
-      <p>no. ${pad(e.no)} &middot; ${kindLabel(e)} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time> &middot; <a href="${escapeHtml(e.url)}" data-umami-event="${open}">${v ? "file" : "full size"}</a></p>
+      <p>no. ${pad(e.no)} &middot; ${kindLabel(e)} &middot; <time datetime="${escapeHtml(e.date)}">${day}</time> &middot; <a href="${escapeHtml(e.url)}" data-umami-event="${open}">${v ? "file" : "full size"}</a></p>${e.kind === "upload" && e.caption ? `
+      <p>${escapeHtml(e.caption)}</p>` : ""}
     </div>`,
   );
 }
