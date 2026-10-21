@@ -554,10 +554,12 @@ const PAGE_STYLES = `
   .work:focus-visible { outline: 1px solid var(--fg); outline-offset: 6px; }
   .empty { padding: 16px 0 32px; color: var(--mid); }
   .info { margin-top: 120px; padding: 28px 0 72px; border-top: 1px solid var(--hair);
-          display: grid; gap: 24px 48px; }
-  @media (min-width: 900px) { .info { grid-template-columns: 1fr 2fr 1fr; } }
-  .info p { max-width: 60ch; }
-  .info p + p { margin-top: 8px; }
+          display: flex; justify-content: space-between; gap: 24px; }
+  .info-page { display: grid; gap: 48px; padding-bottom: 120px; }
+  @media (min-width: 900px) { .info-page { grid-template-columns: 2fr 2fr 1fr; gap: 64px; } }
+  .info-page h3 { font: inherit; font-weight: 700; margin-bottom: 8px; }
+  .info-page p { max-width: 60ch; }
+  .info-page section > p + p { margin-top: 12px; }
   /* one work: centered, the checklist entry beside it */
   .piece { padding: 64px 0 96px; display: grid; gap: 28px; }
   @media (min-width: 1100px) { .piece { grid-template-columns: 1fr 260px; align-items: end; gap: 48px; } }
@@ -630,7 +632,7 @@ function layout(meta: Meta, body: string): string {
 </html>`;
 }
 
-const HEAD_NAV = `<nav><a href="/#works">Works</a><a href="/#archive">Archive</a><a href="/#information">Information</a></nav>`;
+const HEAD_NAV = `<nav><a href="/#works">Works</a><a href="/#archive">Archive</a><a href="/information">Information</a></nav>`;
 function siteHead(right = HEAD_NAV): string {
   return `<header class="head"><h1><a href="/">417am</a></h1>${right}</header>`;
 }
@@ -647,15 +649,31 @@ function videoTag(e: Numbered): string {
   return `<video src="${escapeHtml(e.url)}" poster="${escapeHtml(displayUrl(e))}"${dims(e)} ${e.kind === "studio" ? 'class="crisp" ' : ""}muted loop playsinline controls preload="metadata" data-no="${pad(e.no)}" aria-label="${altText(e)}"></video>`;
 }
 
-// Wall labels, checklist style: title in italics, year, medium. The medium words are the
-// site's existing public kind descriptions (never prompts, recipes or piece names).
+// Materials, named the way painters list their supplies (EJ 2026-10-20: "be super clear about
+// the pipeline ... like people would talk about their art supplies"). Tools and hardware only:
+// never the machine's name, prompts, recipes or piece names. MEDIUM = the one-line wall label,
+// SUPPLIES = the full checklist on the piece page and /information. FLUX.2 [klein] has been the
+// model since the first wall render (2026-09-13); Blender 5.2 is the only Blender installed.
 const MEDIUM: Record<Kind, string> = {
-  flux: "Painterly image",
-  studio: "1-bit dithered render",
+  flux: "FLUX.2 [klein] 9B, stable-diffusion.cpp",
+  studio: "Blender 5.2, Cycles; 1-bit dither",
   upload: "Image",
   bot: "Generative image, posted by @417am1975",
 };
+const SUPPLIES: Record<Kind, string[]> = {
+  flux: [
+    "FLUX.2 [klein] 9B (Q5_K_M GGUF), Qwen3-8B text encoder, FLUX.2 VAE",
+    "stable-diffusion.cpp on Vulkan, AMD Radeon RX 9070 XT",
+  ],
+  // each piece uses ONE dither; the site doesn't know which yet, so pieces say "1-bit dither"
+  // and /information lists the methods (DITHERS)
+  studio: ["Blender 5.2, Cycles, Python", "1-bit dither, nearest-neighbor scaling"],
+  upload: ["Image"],
+  bot: ["Generative image, posted by @417am1975"],
+};
+const DITHERS = "Bayer, blue noise, Atkinson, Floyd–Steinberg, halftone, line, crosshatch, stipple, threshold";
 const medium = (e: Entry) => `${MEDIUM[e.kind]}${isVideo(e) ? ", video" : ""}`;
+const supplies = (e: Entry) => [...SUPPLIES[e.kind], ...(isVideo(e) ? ["Video, H.264"] : [])];
 const yearOf = (e: Numbered) => localDay(e.date).slice(0, 4);
 
 // A work on the wall: contained in an even box (never cropped), bottom-aligned so the labels
@@ -697,16 +715,46 @@ function galleryPage(now: Numbered[], bot: Numbered[]): string {
       <div class="bar" id="bot-era"><h2>Archive: @417am1975, 2017&ndash;2019</h2><span class="mid">The original hourly bot, <a href="https://x.com/417am1975" data-umami-event="outbound" data-umami-event-url="https://x.com/417am1975">x.com/417am1975</a></span></div>
       <div class="grid">${bot.map(botFigure).join("\n")}</div>
     </section>
-    <footer class="info" id="information">
-      <p><b>417am</b><br>EJ Fox</p>
-      <div>
-        <p>417am is the generative art project of EJ Fox: an hourly Twitter bot that ran his after-work
-        scripts with fresh random numbers, 2017&ndash;2019, resumed in 2026. One body of work, numbered
-        oldest first; dates are the day a piece was made, Eastern time.</p>
+    <footer class="info"><p class="mid">417am &middot; EJ Fox</p><p class="mid"><a href="/information">Information</a></p></footer>`,
+  );
+}
+
+// Information: its own page, like a gallery site (a footer anchor at the end of a long page
+// looked like a dead link). About, materials, hours, feeds.
+function informationPage(): string {
+  const list = (k: Kind) => SUPPLIES[k].map((s) => `<p>${escapeHtml(s)}</p>`).join("\n          ");
+  return layout(
+    {
+      title: "Information · 417am.party",
+      description: "417am, EJ Fox's generative art project: about, materials, feeds.",
+      url: SITE + "/information",
+    },
+    `${siteHead()}
+    <div class="bar"><h2>Information</h2></div>
+    <div class="info-page">
+      <section>
+        <p>417am is the generative art project of EJ Fox. It began in 2017 as @417am1975, an hourly
+        Twitter bot that ran his after-work scripts with fresh random numbers, and resumed in 2026.
+        One body of work, numbered oldest first; dates are the day a piece was made, Eastern time.</p>
         <p class="mid">Open daily, 4:17 am.</p>
-      </div>
-      <p><a href="/rss.xml" data-umami-event="rss-click">RSS</a><br><a href="/feed.json" data-umami-event="feed-json-click">JSON feed</a><br><a href="https://ejfox.com" data-umami-event="outbound" data-umami-event-url="https://ejfox.com">ejfox.com</a></p>
-    </footer>`,
+      </section>
+      <section>
+        <h3>Materials</h3>
+        <div class="tomb">
+          <p class="gap"><i>Images</i></p>
+          ${list("flux")}
+          <p class="gap"><i>Studio renders</i></p>
+          ${list("studio")}
+          <p class="mid">Dither, one per piece: ${escapeHtml(DITHERS)}</p>
+        </div>
+      </section>
+      <section>
+        <h3>Elsewhere</h3>
+        <p><a href="/rss.xml" data-umami-event="rss-click">RSS</a><br><a href="/feed.json" data-umami-event="feed-json-click">JSON feed</a><br>
+        <a href="https://x.com/417am1975" data-umami-event="outbound" data-umami-event-url="https://x.com/417am1975">@417am1975</a><br>
+        <a href="https://ejfox.com" data-umami-event="outbound" data-umami-event-url="https://ejfox.com">ejfox.com</a></p>
+      </section>
+    </div>`,
   );
 }
 
@@ -732,7 +780,7 @@ function piecePage(e: Numbered): string {
       <div class="tomb">
         <p>EJ Fox</p>
         <p><i>417am no. ${pad(e.no)}</i>, ${yearOf(e)}</p>
-        <p>${medium(e)}</p>
+        ${supplies(e).map((s) => `<p>${escapeHtml(s)}</p>`).join("\n        ")}
         ${e.width && e.height ? `<p class="mid">${e.width} &times; ${e.height} px</p>` : ""}
         <p class="mid"><time datetime="${escapeHtml(e.date)}">${day}</time></p>${e.kind === "upload" && e.caption ? `
         <p class="gap">${escapeHtml(e.caption)}</p>` : ""}
@@ -858,6 +906,11 @@ app.get("/p/:slug", async (c) => {
   if (!e) return c.text("not found", 404);
   c.header("Cache-Control", "public, max-age=300");
   return c.html(piecePage(e));
+});
+
+app.get("/information", (c) => {
+  c.header("Cache-Control", "public, max-age=300");
+  return c.html(informationPage());
 });
 
 app.get("/rss.xml", async (c) => {
