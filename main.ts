@@ -1133,7 +1133,7 @@ function galleryPage(now: Numbered[], bot: Numbered[]): string {
       <div class="bar" id="bot-era"><h2>Archive: @417am1975, 2017&ndash;2019</h2><span class="mid">The original hourly bot, <a href="https://x.com/417am1975" data-umami-event="outbound" data-umami-event-url="https://x.com/417am1975">x.com/417am1975</a></span></div>
       <div class="grid">${bot.map(botFigure).join("\n")}</div>
     </section>
-    <footer class="info"><p class="mid">417am &middot; EJ Fox</p><p class="mid"><a href="/information">Information</a></p></footer>`,
+    <footer class="info"><p class="mid">417am &middot; EJ Fox</p><p class="mid"><a href="/print-room/">Print room</a>&emsp;<a href="/information">Information</a></p></footer>`,
   );
 }
 
@@ -1344,6 +1344,39 @@ app.get("/a/:no", async (c) => {
 app.get("/information", (c) => {
   c.header("Cache-Control", "public, max-age=300");
   return c.html(informationPage());
+});
+
+// Print room: every work hung in a walkable 3D gallery, ordered by likeness. Static files
+// built in the 417am-print-room repo (`make publish` copies them into print-room/).
+const PRINT_ROOM: Record<string, string> = {
+  "index.html": "text/html; charset=utf-8",
+  "app.js": "text/javascript; charset=utf-8",
+  "pile.js": "text/javascript; charset=utf-8",
+  "style.css": "text/css; charset=utf-8",
+  "gallery.json": "application/json",
+};
+const PRINT_ROOM_DIR = new URL("./print-room/", import.meta.url);
+async function printRoomFile(name: string) {
+  const type = PRINT_ROOM[name];
+  if (!type) return null;
+  try {
+    return { body: await Deno.readFile(new URL(name, PRINT_ROOM_DIR)), type };
+  } catch {
+    return null;
+  }
+}
+app.get("/print-room", (c) => c.redirect("/print-room/", 301));
+app.get("/print-room/", async (c) => {
+  const file = await printRoomFile("index.html");
+  if (!file) return c.text("not found", 404);
+  c.header("Cache-Control", "public, max-age=300");
+  return c.body(file.body, 200, { "Content-Type": file.type });
+});
+app.get("/print-room/:name", async (c) => {
+  const file = await printRoomFile(c.req.param("name"));
+  if (!file) return c.text("not found", 404);
+  c.header("Cache-Control", "public, max-age=300");
+  return c.body(file.body, 200, { "Content-Type": file.type });
 });
 
 app.get("/rss.xml", async (c) => {

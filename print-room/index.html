@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en" class="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="417am, every work, hung by likeness.">
+  <meta name="theme-color" content="#ffffff">
+  <title>Print room · 417am</title>
+  <link rel="preconnect" href="https://res.cloudinary.com" crossorigin>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/ejfox/academic.css@1.0.0/academic.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a href="/">417am</a>
+    <h1>Print room</h1>
+    <button id="night" class="night" type="button" aria-pressed="false">4:17</button>
+  </header>
+  <main class="layout">
+    <aside class="rail" aria-label="Rooms">
+      <p id="intro-text" class="mid"></p>
+      <nav aria-label="Rooms" class="room-list" id="rooms"></nav>
+      <canvas id="map" width="286" height="250" role="img" aria-label="Floor plan"></canvas>
+      <button type="button" id="checklist" class="checklist">Checklist</button>
+    </aside>
+    <section class="gallery" aria-label="Gallery">
+      <div class="viewport" id="viewport">
+        <div class="canvas-mount" id="mount"></div>
+        <div class="scene-hud"><span id="room-label"></span></div>
+        <div class="seen-hud" id="seen" title="Seen, in this browser"><span id="seen-note"></span><span id="seen-count"></span></div>
+        <div class="scene-status" id="status" role="status">Loading</div>
+        <button id="reset" type="button" class="reset" aria-label="Reset view" title="Reset view">↺</button>
+        <div class="tour-caption" id="tour-caption" hidden>
+          <span id="tour-stop" class="tour-stop"></span>
+          <div><strong id="tour-title"></strong> <span id="tour-medium"></span></div>
+        </div>
+        <div class="tour-progress" id="tour-progress" hidden aria-hidden="true"><span></span></div>
+        <div class="touch-pad" aria-label="Movement">
+          <button type="button" data-move="KeyA" aria-label="Left">←</button>
+          <button type="button" data-move="KeyW" aria-label="Forward">↑</button>
+          <button type="button" data-move="KeyS" aria-label="Back">↓</button>
+          <button type="button" data-move="KeyD" aria-label="Right">→</button>
+        </div>
+      </div>
+      <footer class="controls">
+        <span class="desktop-help mid">WASD walk · Shift run · Space kick · Click</span>
+        <span class="mobile-help mid">Swipe · Tap</span>
+        <div class="gallery-actions">
+          <button type="button" id="tour">Next <span aria-hidden="true">→</span></button>
+          <button type="button" id="auto-tour" class="auto-tour" disabled><span aria-hidden="true" id="auto-tour-icon">▶</span> <span id="auto-tour-label">Tour</span></button>
+          <button type="button" id="end-tour" class="end-tour" hidden>End</button>
+        </div>
+      </footer>
+    </section>
+  </main>
+  <dialog id="inspect" class="inspect" aria-labelledby="piece-title">
+    <header class="dialog-bar"><div><span id="piece-room" class="mid"></span> <h2 id="piece-title"></h2></div><button type="button" class="close" data-close aria-label="Close">×</button></header>
+    <div id="print-stage" class="print-stage" tabindex="0" aria-label="Print. Plus or minus to zoom, drag to pan."><img id="print" alt="" draggable="false"><span id="print-status" role="status"></span></div>
+    <section class="likeness" aria-labelledby="likeness-title"><h3 id="likeness-title" class="mid">Most alike</h3><div id="near-list" class="near-list"></div></section>
+    <footer class="print-footer">
+      <div><span id="piece-medium"></span> <span id="piece-size" class="mid"></span></div>
+      <div class="print-tools"><button type="button" id="zoom-out" aria-label="Zoom out">−</button><button type="button" id="zoom-reset" aria-label="Reset zoom">Fit</button><button type="button" id="zoom-in" aria-label="Zoom in">+</button><a id="original">Page</a></div>
+    </footer>
+  </dialog>
+  <dialog id="index" class="index" aria-labelledby="index-title"><header class="dialog-bar"><h2 id="index-title">Checklist</h2><button type="button" class="close" data-close aria-label="Close">×</button></header><div id="index-list"></div></dialog>
+  <noscript><a href="/">417am</a></noscript>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
