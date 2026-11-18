@@ -1,11 +1,14 @@
-// A floor covered in letter-size prints (8.5 x 11 in) that you can kick around.
+// A floor covered in prints that you can kick around. Each sheet is cut to its work's
+// proportions, edge to edge, long side 11 in.
 // One InstancedMesh, one texture atlas of thumbnails, a small hand-rolled paper physics:
 // heavy air drag when falling, flutter while airborne, friction on the floor,
 // and a little chain reaction when a sliding sheet runs into a resting one.
 
-const SHEET_W = .216, SHEET_H = .279;
+const LONG = .279;                    // long edge of every sheet, 11 in
 const COLS = 16, ROWS = 8;            // atlas: 128 different prints
-const CELL_W = 128, CELL_H = 166;     // px per atlas cell, 8.5:11
+const CELL_PX = 160;                  // square atlas cells; each print is stretched to fill its cell
+const GUTTER = 8;                     // px around each cell filled with the print's own edge, so mipmaps never bleed a neighbour in
+const SLOT = CELL_PX + GUTTER * 2;
 const GRAVITY = 9.8;
 const CELL = .5;                      // spatial grid for kicks and knock-ons
 
@@ -16,11 +19,11 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
     return s / 4294967296;
   };
 
-  // ---------- atlas: every sheet is one of 128 prints with a white paper margin ----------
+  // ---------- atlas: every sheet is one of 128 prints, no margin ----------
   const atlas = document.createElement('canvas');
-  atlas.width = COLS * CELL_W; atlas.height = ROWS * CELL_H;
+  atlas.width = COLS * SLOT; atlas.height = ROWS * SLOT;
   const ctx = atlas.getContext('2d');
-  ctx.fillStyle = '#f4f1ea'; ctx.fillRect(0, 0, atlas.width, atlas.height);
+  ctx.fillStyle = '#d8d8d8'; ctx.fillRect(0, 0, atlas.width, atlas.height);
   const map = new T.CanvasTexture(atlas);
   map.colorSpace = T.SRGBColorSpace;
   map.anisotropy = 4;
@@ -32,11 +35,10 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
     image.crossOrigin = 'anonymous';
     image.decoding = 'async';
     image.onload = () => {
-      const cx = (k % COLS) * CELL_W, cy = Math.floor(k / COLS) * CELL_H;
-      const margin = 11;
-      const fit = Math.min((CELL_W - margin * 2) / image.naturalWidth, (CELL_H - margin * 2.6) / image.naturalHeight);
-      const w = image.naturalWidth * fit, h = image.naturalHeight * fit;
-      ctx.drawImage(image, cx + (CELL_W - w) / 2, cy + margin * 1.2, w, h);
+      const sx = (k % COLS) * SLOT, sy = Math.floor(k / COLS) * SLOT;
+      // the whole slot first (its gutter gets the print's outer edge), then the print itself inside
+      ctx.drawImage(image, sx, sy, SLOT, SLOT);
+      ctx.drawImage(image, sx + GUTTER, sy + GUTTER, CELL_PX, CELL_PX);
       dirty = true;
       onchange?.();
     };
@@ -44,14 +46,22 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
   });
 
   // ---------- mesh ----------
-  const geometry = new T.PlaneGeometry(SHEET_W, SHEET_H);
+  // sheet size per atlas cell, from the work's own pixel dimensions
+  const sizes = picks.map(work => {
+    const aspect = (work.w || 1) / (work.h || 1);
+    if (aspect >= 1) return [LONG, LONG / aspect];
+    return [LONG * aspect, LONG];
+  });
+  const geometry = new T.PlaneGeometry(1, 1);
   const cells = new Float32Array(count * 2);
   const material = new T.MeshBasicMaterial({map, side: T.DoubleSide, toneMapped: false});
   material.onBeforeCompile = shader => {
-    shader.uniforms.cellScale = {value: new T.Vector2(1 / COLS, 1 / ROWS)};
+    const pad = new T.Vector2(GUTTER / atlas.width, GUTTER / atlas.height);
+    shader.uniforms.cellScale = {value: new T.Vector2(1 / COLS - pad.x * 2, 1 / ROWS - pad.y * 2)};
+    shader.uniforms.cellPad = {value: pad};
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec2 aCell;\nuniform vec2 cellScale;')
-      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvMapUv = vMapUv * cellScale + aCell;');
+      .replace('#include <common>', '#include <common>\nattribute vec2 aCell;\nuniform vec2 cellScale;\nuniform vec2 cellPad;')
+      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvMapUv = vMapUv * cellScale + aCell + cellPad;');
     // the back of a sheet is blank paper
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <map_fragment>', '#include <map_fragment>\nif (!gl_FrontFacing) diffuseColor.rgb = diffuse * vec3(.95, .94, .91);');
@@ -66,6 +76,7 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
   const yaw = new Float32Array(count), spin = new Float32Array(count);
   const tilt = new Float32Array(count), tiltSpeed = new Float32Array(count);
   const rest = new Float32Array(count), phase = new Float32Array(count);
+  const sw = new Float32Array(count), sh = new Float32Array(count);
   const awake = new Uint8Array(count);
   let awakeCount = 0;
 
@@ -93,18 +104,20 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
     phase[i] = rand() * Math.PI * 2;
     if (rand() < .08) tilt[i] = Math.PI;       // a few landed face down
     const cell = Math.floor(rand() * COLS * ROWS);
+    [sw[i], sh[i]] = sizes[cell];
     cells[i * 2] = (cell % COLS) / COLS;
     cells[i * 2 + 1] = 1 - (Math.floor(cell / COLS) + 1) / ROWS;
   }
   geometry.setAttribute('aCell', new T.InstancedBufferAttribute(cells, 2));
 
   const matrix = new T.Matrix4(), position = new T.Vector3(), quaternion = new T.Quaternion();
-  const euler = new T.Euler(0, 0, 0, 'YXZ'), unit = new T.Vector3(1, 1, 1);
+  const euler = new T.Euler(0, 0, 0, 'YXZ'), scale = new T.Vector3(1, 1, 1);
   function write(i) {
     euler.set(-Math.PI / 2 + tilt[i], yaw[i], Math.sin(phase[i]) * .35 * Math.min(1, (py[i] - rest[i]) * 4));
     quaternion.setFromEuler(euler);
     position.set(px[i], py[i], pz[i]);
-    matrix.compose(position, quaternion, unit);
+    scale.set(sw[i], sh[i], 1);
+    matrix.compose(position, quaternion, scale);
     mesh.setMatrixAt(i, matrix);
   }
   for (let i = 0; i < count; i++) write(i);
@@ -186,7 +199,7 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
     for (let i = 0; i < count; i++) {
       if (!awake[i]) continue;
       // a tilted sheet stands on its lowest edge, not its centre
-      const ground = rest[i] + Math.abs(Math.sin(tilt[i])) * SHEET_H / 2;
+      const ground = rest[i] + Math.abs(Math.sin(tilt[i])) * sh[i] / 2;
       const airborne = py[i] > ground + .002 || vy[i] > 0;
       if (airborne) {
         vy[i] -= GRAVITY * dt;
@@ -214,7 +227,7 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
       if (inside(px[i], nz)) pz[i] = nz; else vz[i] *= -.35;
       py[i] += vy[i] * dt;
       if (py[i] > 4.6) { py[i] = 4.6; vy[i] = -Math.abs(vy[i]) * .3; }
-      const floor = rest[i] + Math.abs(Math.sin(tilt[i])) * SHEET_H / 2;
+      const floor = rest[i] + Math.abs(Math.sin(tilt[i])) * sh[i] / 2;
       if (py[i] <= floor) { py[i] = floor; vy[i] = Math.max(0, vy[i]); }
       const speed = Math.hypot(vx[i], vz[i]);
       if (!airborne && speed > 1.3) knocks.push(i);
