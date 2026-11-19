@@ -58,6 +58,8 @@ button:disabled{cursor:default;color:var(--mid)}
 .mobile-help.gone{opacity:0}
 .gallery-actions{display:flex;gap:16px}
 .end-tour,.tour-hold{color:var(--mid)}
+.auto-tour.resting{color:var(--mid);pointer-events:none}
+.flat-video{width:100%;background:#000}
 .tour-hold{font-variant-numeric:tabular-nums;min-width:3ch}
 
 dialog{position:fixed;inset:0;margin:auto;background:var(--bg);color:var(--fg);border:1px solid var(--fg);padding:0;max-width:calc(100% - 24px);max-height:calc(100% - 24px)}

@@ -10,6 +10,8 @@ const PILE_ROOM = 0;
 const PILE_COUNT = 1024;
 
 const DOOR = 2.3;
+// one CRT in a bank (pipeline/layout.py uses the same sizes to hang them)
+const CRT_W = .62, CRT_H = .5, CRT_GAP = .03, CRT_DEPTH = .46;
 const EYE_HEIGHT = 1.75;
 const H = DATA.H;
 const PREVIEW = 768;
@@ -59,6 +61,17 @@ function inDoor(x, z) {
   });
 }
 
+// a bank of CRTs stands on the floor against its wall: walk up to it, not into it
+function inBank(x, z) {
+  return rooms.some(room => (room.screens ?? []).some(screen => {
+    if (screen.kind !== 'crt') return false;
+    const dx = x - screen.x, dz = z - screen.z;
+    const along = dx * Math.cos(screen.yaw) - dz * Math.sin(screen.yaw);
+    const out = dx * Math.sin(screen.yaw) + dz * Math.cos(screen.yaw);
+    return Math.abs(along) < screen.dw / 2 + .25 && out > -.3 && out < CRT_DEPTH + .3;
+  }));
+}
+
 function onBench(x, z) {
   return DATA.benches.some(([bx, bz, width, alongX]) => {
     if (alongX) return Math.abs(x - bx) < width / 2 + .25 && Math.abs(z - bz) < .565;
@@ -67,7 +80,7 @@ function onBench(x, z) {
 }
 
 function canStand(x, z) {
-  if (onBench(x, z)) return false;
+  if (onBench(x, z) || inBank(x, z)) return false;
   if (inDoor(x, z)) return true;
   return rooms.some(room => insideRect(room.rect, x, z, .32));
 }
@@ -246,11 +259,59 @@ function buildSpace(T, scene, works) {
   }
 
   for (const room of rooms) {
-    const first = byId.get(room.works[0]);
+    // the room number sits high on the wall above the first thing hung there
+    let anchor = byId.get(room.works[0]);
+    let width = anchor?.width;
+    let high = 3.45;
+    if (!anchor) { anchor = room.screens[0]; width = anchor.dw; high = 4.2; }  // clear of the projection
     const group = new T.Group();
-    group.position.set(first.x, 0, first.z); group.rotation.y = first.yaw;
+    group.position.set(anchor.x, 0, anchor.z); group.rotation.y = anchor.yaw;
     roomGroups[room.index].add(group);
-    surface(2.6, .42, lettering([room.number], true, 1024, 166), -first.width / 2 + 1.3, 3.45, .005, 0, group);
+    surface(2.6, .42, lettering([room.number], true, 1024, 166), -width / 2 + 1.3, high, .005, 0, group);
+  }
+
+  // ---------- video rooms: banks of stacked CRTs, and one big projection ----------
+  const screenSlots = [];
+  const plastic = immaterial(0x2b2b2b, 0x111111);
+  const bezel = immaterial(0x161616, 0x060606);
+  // a dead tube until its video arrives; then scanlines and a darker rim, like glass over phosphor
+  function tube(scanlines) {
+    const material = new T.MeshBasicMaterial({color: 0x0b0b0b, toneMapped: false});
+    if (!scanlines) return material;
+    material.onBeforeCompile = shader => {
+      shader.fragmentShader = shader.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
+        #ifdef USE_MAP
+          vec2 tubeAt = vMapUv * 2.0 - 1.0;
+          diffuseColor.rgb *= (.78 + .22 * sin(vMapUv.y * 1100.0)) * smoothstep(1.32, .55, length(tubeAt * vec2(1.0, .9)));
+          diffuseColor.rgb += .012;
+        #endif`);
+    };
+    return material;
+  }
+  for (const room of rooms) {
+    for (const screen of room.screens ?? []) {
+      const group = new T.Group(); group.position.set(screen.x, 0, screen.z); group.rotation.y = screen.yaw;
+      roomGroups[room.index].add(group);
+      if (screen.kind === 'crt') {
+        for (let row = 0; row < screen.rows; row++) {
+          for (let col = 0; col < screen.cols; col++) {
+            const cx = -screen.dw / 2 + CRT_W / 2 + col * (CRT_W + CRT_GAP);
+            const cy = CRT_H / 2 + row * (CRT_H + CRT_GAP);
+            box(CRT_W, CRT_H, CRT_DEPTH, plastic, cx, cy, CRT_DEPTH / 2, group);
+            const material = tube(true);
+            surface(CRT_W * .78, CRT_H * .76, material, cx - CRT_W * .06, cy + .01, CRT_DEPTH + .003, 0, group);
+            // neighbours show different channels: run them along the diagonals
+            screenSlots.push({room: room.index, src: screen.src[(row + col) % screen.src.length], material});
+          }
+        }
+      } else {
+        const y = 2.15;
+        box(screen.dw + .1, screen.dh + .1, .04, bezel, 0, y, .02, group);
+        const material = tube(false);
+        surface(screen.dw, screen.dh, material, 0, y, .045, 0, group);
+        screenSlots.push({room: room.index, src: screen.src[0], material});
+      }
+    }
   }
 
   for (const work of works) {
@@ -268,7 +329,7 @@ function buildSpace(T, scene, works) {
     screen.userData.work = work; faces.push(screen);
     surface(.63, .158, lettering([`no. ${work.id}`, String(work.year)], false, 512, 128), work.width / 2 - .26, -height / 2 - .145, 0, 0, center);
   }
-  return {faces, palette, roomGroups};
+  return {faces, palette, roomGroups, screenSlots};
 }
 
 // ---------- tour ----------
@@ -329,13 +390,16 @@ let lastFocus;
 let tour;
 
 const years = works.map(work => work.year);
-$('intro-text').textContent = `${works.length} works, ${Math.min(...years)}–${Math.max(...years)}. ${rooms.length} rooms, hung by likeness.`;
+const printRooms = rooms.filter(room => room.works.length).length;
+$('intro-text').textContent = `${works.length} works, ${Math.min(...years)}–${Math.max(...years)}. ${printRooms} rooms, hung by likeness.`;
 
 for (const room of rooms) {
   const button = document.createElement('button');
   button.type = 'button'; button.className = 'room'; button.dataset.room = String(room.index);
   const number = document.createElement('span'); number.className = 'room-number'; number.textContent = room.number;
-  button.setAttribute('aria-label', `Room ${room.number}, ${plural(room.works.length, 'work')}`);
+  let label = `Room ${room.number}, ${plural(room.works.length, 'work')}`;
+  if (room.screens) label = `Room ${room.number}, video`;
+  button.setAttribute('aria-label', label);
   const tally = document.createElement('span'); tally.className = 'room-seen'; tally.title = 'Seen';
   button.append(number, tally);
   $('rooms').append(button);
@@ -447,6 +511,8 @@ function setRoom(index) {
   let next = 'Next ';
   if (index === rooms.length - 1) next = 'First ';
   $('tour').firstChild.textContent = next;
+  // video rooms have no pieces to tour; the button rests there
+  if (!tour) autoTour.classList.toggle('resting', !room.works.length);
   sceneView?.nearRoom?.(index);
   drawMap();
 }
@@ -487,6 +553,8 @@ function paintSeen(index) {
   const room = rooms[index];
   const count = seenIn(room);
   const tally = roomButtons[index].querySelector('.room-seen');
+  $('seen-count').textContent = `${seen.size} / ${works.length}`;
+  if (room.screens) { tally.textContent = 'video'; return; }
   tally.textContent = `${count}/${room.works.length}`;
   roomButtons[index].classList.toggle('complete', count === room.works.length);
   $('seen-count').textContent = `${seen.size} / ${works.length}`;
@@ -645,8 +713,10 @@ autoTour.addEventListener('click', () => {
     else queueTourFrame();
     return;
   }
+  const order = tourOrder(rooms[currentRoom]);
+  if (!order.length) return;  // a video room: nothing to step through
   keys.clear();
-  tour = {order: tourOrder(rooms[currentRoom]), index: 0, held: 0, playing: true, frame: 0};
+  tour = {order, index: 0, held: 0, playing: true, frame: 0};
   tourProgress.hidden = false;
   setTourControls('playing');
   moveToStop();
@@ -777,7 +847,7 @@ printDialog.addEventListener('close', () => {
 });
 indexDialog.addEventListener('close', () => { if (!printDialog.open) $('checklist').focus(); });
 $('checklist').addEventListener('click', () => { stopTour(); keys.clear(); indexDialog.showModal(); });
-for (const room of rooms) {
+for (const room of rooms.filter(room => room.works.length)) {
   const section = document.createElement('section');
   const heading = document.createElement('h3'); heading.textContent = room.number; section.append(heading);
   for (const id of room.works) {
@@ -842,6 +912,15 @@ function fallback() {
       const label = document.createElement('span'); label.textContent = work.title;
       button.append(image, label); button.addEventListener('click', () => showPrint(work)); grid.append(button);
     }
+    // a video room without 3D: just the clips, muted and looping
+    const clips = new Set((rooms[index].screens ?? []).flatMap(screen => screen.src));
+    for (const src of clips) {
+      const video = document.createElement('video');
+      video.src = src; video.muted = true; video.loop = true; video.autoplay = true; video.playsInline = true;
+      video.setAttribute('playsinline', ''); video.className = 'flat-video';
+      video.addEventListener('click', () => video.play().catch(() => {}));  // autoplay refused: tap starts it
+      grid.append(video);
+    }
   }
   $('status').hidden = true;
   autoTour.disabled = false;
@@ -870,7 +949,53 @@ function walkable(T) {
   const markerDay = new T.Color(0x111111), markerNight = new T.Color(0xf2f2f2);
   scene.fog = new T.Fog(scene.background, 24, 64);
   const camera = new T.PerspectiveCamera(58, 1, .07, 90); camera.rotation.order = 'YXZ';
-  const {faces, palette, roomGroups} = buildSpace(T, scene, works);
+  const {faces, palette, roomGroups, screenSlots} = buildSpace(T, scene, works);
+  // ---------- video: one <video> per clip, loaded and playing only within a room of you ----------
+  const channels = new Map();
+  for (const slot of screenSlots) {
+    if (!channels.has(slot.src)) channels.set(slot.src, {slots: [], rooms: new Set()});
+    channels.get(slot.src).slots.push(slot);
+    channels.get(slot.src).rooms.add(slot.room);
+  }
+  function tune(src, channel) {
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous'; video.muted = true; video.loop = true; video.playsInline = true;
+    video.setAttribute('playsinline', ''); video.preload = 'auto'; video.src = src;
+    channel.video = video;
+    channel.texture = new T.VideoTexture(video);
+    channel.texture.colorSpace = T.SRGBColorSpace;
+    // each new frame asks for one render, so the page still idles between frames
+    // one callback chain per clip: a pause ends it, the next 'playing' starts it again
+    let waiting = false;
+    const ask = () => {
+      if (waiting || video.paused || !video.requestVideoFrameCallback) return;
+      waiting = true; video.requestVideoFrameCallback(onFrame);
+    };
+    const onFrame = () => { waiting = false; invalidate(); ask(); };
+    video.addEventListener('playing', () => {
+      for (const slot of channel.slots) {
+        if (slot.material.map === channel.texture) continue;
+        slot.material.map = channel.texture; slot.material.color.setHex(0xffffff); slot.material.needsUpdate = true;
+      }
+      ask();
+      invalidate();
+    });
+  }
+  function screensNear(index) {
+    for (const [src, channel] of channels) {
+      const live = [...channel.rooms].some(room => near(room, index, 1));
+      if (live && !channel.video) tune(src, channel);
+      if (!channel.video) continue;
+      if (live) channel.video.play().catch(() => { /* autoplay refused: the next tap starts it */ });
+      else channel.video.pause();
+    }
+  }
+  // some browsers only start video after a gesture
+  addEventListener('pointerdown', () => screensNear(currentRoom));
+  function videoPlaying() {
+    for (const channel of channels.values()) if (channel.video && !channel.video.paused) return true;
+    return false;
+  }
   // where a floor click is headed
   const marker = new T.Mesh(new T.RingGeometry(.17, .23, 40), new T.MeshBasicMaterial({color: 0x111111, toneMapped: false, transparent: true, opacity: .85, depthWrite: false}));
   marker.rotation.x = -Math.PI / 2; marker.visible = false; scene.add(marker);
@@ -965,6 +1090,7 @@ function walkable(T) {
   }
   function nearRoom(index) {
     roomGroups.forEach((group, i) => { group.visible = near(i, index, 2); });
+    screensNear(index);
     for (const face of faces) {
       const room = face.userData.work.room;
       if (near(room, index, 1)) loadPreview(face).catch(() => {});
@@ -1291,7 +1417,9 @@ function walkable(T) {
     refine();
     renderer.render(scene, camera);
     drawMap(camera.position, yaw);
-    if (glide || walking() || light !== lit || paper || zooming) invalidate();
+    // without per-frame video callbacks, a playing screen keeps the loop running
+    const screensLive = !('requestVideoFrameCallback' in HTMLVideoElement.prototype) && videoPlaying();
+    if (glide || walking() || light !== lit || paper || zooming || screensLive) invalidate();
     else last = 0;
   }
   function tint() {
