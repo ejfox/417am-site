@@ -928,10 +928,11 @@ function walkable(T) {
   let SHARP_KEEP = 3;
   if (coarse) SHARP_KEEP = 2;
 
-  function configure(texture, work, close = false) {
+  function configure(texture, work) {
     texture.colorSpace = T.SRGBColorSpace;
     texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-    if (work.dither && close) texture.magFilter = T.NearestFilter;
+    // dither stays crisp pixels at every size, preview included; smoothing it reads as blur
+    if (work.dither) texture.magFilter = T.NearestFilter;
     return texture;
   }
   function assign(face, texture) {
@@ -1013,7 +1014,7 @@ function walkable(T) {
     const ratio = w / h; camera.aspect = ratio;
     camera.fov = 58;
     if (ratio < 1) camera.fov = Math.min(91, 58 + (1 - ratio) * 54);
-    baseFov = camera.fov; applyZoom(); renderer.setPixelRatio(Math.min(devicePixelRatio, 1.8)); renderer.setSize(w, h, false); invalidate();
+    baseFov = camera.fov; applyZoom(); renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(w, h, false); invalidate();
   }
   function invalidate() {
     if (!frame) frame = requestAnimationFrame(render);
@@ -1212,7 +1213,9 @@ function walkable(T) {
     // the print you're looking at: the one nearest the middle of the view, within reach
     // (zoomed in, a far print fills the view as a near one would: same test, scaled)
     let candidate, centred = -1;
-    const cone = Math.cos(Math.atan(Math.tan(Math.acos(.65)) / zoom));
+    // judge by where the zoom is headed, so the sharp copy is requested the moment you press
+    const reach = Math.max(zoom, zoomTarget);
+    const cone = Math.cos(Math.atan(Math.tan(Math.acos(.65)) / reach));
     for (const face of faces) {
       const work = face.userData.work;
       if (work.room !== currentRoom || !face.userData.preview) continue;
@@ -1220,7 +1223,7 @@ function walkable(T) {
       offset.subVectors(printPosition, camera.position);
       const d = offset.length();
       const aim = offset.dot(forward) / d;
-      if (d / zoom > 4.6 || aim < cone || aim <= centred) continue;
+      if (d / reach > 4.6 || aim < cone || aim <= centred) continue;
       candidate = face; centred = aim;
     }
     // stopping in front of a print for a moment counts as seeing it; walking past doesn't
@@ -1245,7 +1248,7 @@ function walkable(T) {
     limit = Math.min(renderer.capabilities.maxTextureSize, limit);
     loader.loadAsync(work.texture(limit)).then(texture => {
       if (!near(work.room, currentRoom, 1) || !candidate.userData.preview) { texture.dispose(); return; }
-      candidate.userData.sharp = configure(texture, work, true); assign(candidate, texture);
+      candidate.userData.sharp = configure(texture, work); assign(candidate, texture);
       sharpFaces.push(candidate);
       // keep the last few prints you looked at sharp, so looking back (or zooming again) is instant
       while (sharpFaces.length > SHARP_KEEP) dropSharp(sharpFaces[0]);
