@@ -144,20 +144,21 @@ function buildSpace(T, scene, works) {
     const mesh = new T.Mesh(new T.BoxGeometry(w, h, d), material);
     mesh.position.set(x, y, z); parent.add(mesh); return mesh;
   }
-  const ceiling = immaterial(0xe2e2e0, 0x161616);
-  const edge = immaterial(0xc8c8c6, 0x202020);
-  const recess = immaterial(0x7a7a78, 0x0c0c0c);
-  const timber = immaterial(0x1c1c1c, 0x111111);
-  const dark = immaterial(0x111111, 0x080808);
-  const light = immaterial(0xffffff, 0x2c2c2c);
-  const softLight = immaterial(0xf2f2f0, 0x1c1c1c);
+  // after hours: the house lights are off, the room goes OLED black, only the art is lit
+  const ceiling = immaterial(0xe2e2e0, 0x050505);
+  const edge = immaterial(0xc8c8c6, 0x1a1a1a);
+  const recess = immaterial(0x7a7a78, 0x030303);
+  const timber = immaterial(0x1c1c1c, 0x232323);
+  const dark = immaterial(0x111111, 0x050505);
+  const light = immaterial(0xffffff, 0x0b0b0b);
+  const softLight = immaterial(0xf2f2f0, 0x080808);
   const walls = new Map();
   function wall(x1, z1, x2, z2) {
     const width = Math.hypot(x2 - x1, z2 - z1);
     const yaw = Math.atan2(z1 - z2, x2 - x1);
     const x = (x1 + x2) / 2, z = (z1 + z2) / 2;
     const key = width.toFixed(0);
-    if (!walls.has(key)) walls.set(key, immaterial(0xffffff, 0x2e2e2e, {map: plaster(width), side: T.DoubleSide}));
+    if (!walls.has(key)) walls.set(key, immaterial(0xffffff, 0x141414, {map: plaster(width), side: T.DoubleSide}));
     const group = new T.Group(); group.position.set(x, 0, z); group.rotation.y = yaw; scene.add(group);
     box(width, H, .12, walls.get(key), 0, H / 2, 0, group);
     box(width, .096, .15, recess, 0, .048, 0, group);
@@ -173,7 +174,7 @@ function buildSpace(T, scene, works) {
     map.wrapS = map.wrapT = T.RepeatWrapping;
     map.repeat.set((x2 - x1) / 6, (z2 - z1) / 6);
     map.needsUpdate = true;
-    const floor = immaterial(0xffffff, 0x262626, {map});
+    const floor = immaterial(0xffffff, 0x121212, {map});
     surface(x2 - x1, z2 - z1, floor, x, 0, z).rotation.x = -Math.PI / 2;
     surface(x2 - x1, z2 - z1, ceiling, x, H, z).rotation.x = Math.PI / 2;
     box((x2 - x1) * .68, .035, (z2 - z1) * .66, recess, x, H - .024, z);
@@ -210,7 +211,7 @@ function buildSpace(T, scene, works) {
     glow.addColorStop(0, '#ffffff'); glow.addColorStop(.42, '#ffffff8c'); glow.addColorStop(.78, '#ffffff1f'); glow.addColorStop(1, '#ffffff00');
     c.fillStyle = glow; c.fillRect(0, 0, w, h);
   });
-  const wash = immaterial(0x1a1a1a, 0x707070, {map: washMap, transparent: true, depthWrite: false, blending: T.AdditiveBlending});
+  const wash = immaterial(0x1a1a1a, 0x5c5c5c, {map: washMap, transparent: true, depthWrite: false, blending: T.AdditiveBlending});
 
   for (const [x, z, width, alongX] of DATA.benches) {
     let w = width, d = .63, lw = .14, ld = .47;
@@ -224,17 +225,24 @@ function buildSpace(T, scene, works) {
     shadowPlane.rotation.x = -Math.PI / 2;
   }
 
+  // white glyphs, tinted by the material: ink by day, pale grey after hours;
+  // the second line is the same ink at half strength, so it reads as grey on either wall
+  const ink = immaterial(0x111111, 0xcfcfcf, {transparent: true, depthWrite: false});
   function lettering(lines, large, width, height) {
-    return immaterial(0xffffff, 0x9a9a9a, {map: pattern(width, height, (c) => {
+    const material = ink.clone();
+    palette.push({material, day: new T.Color(0x111111), night: new T.Color(0xcfcfcf)});
+    material.map = pattern(width, height, (c) => {
       c.textBaseline = 'middle';
       const face = '"Helvetica Neue", Helvetica, Arial, sans-serif';
+      c.fillStyle = '#ffffff';
       if (large) {
-        c.fillStyle = '#111111'; c.font = `92px ${face}`; c.fillText(lines[0], 14, height * .5);
+        c.font = `92px ${face}`; c.fillText(lines[0], 14, height * .5);
       } else {
-        c.fillStyle = '#111111'; c.font = `30px ${face}`; c.fillText(lines[0], 10, 42);
-        c.fillStyle = '#8a8a8a'; c.font = `24px ${face}`; c.fillText(lines[1], 10, 83);
+        c.font = `30px ${face}`; c.fillText(lines[0], 10, 42);
+        c.globalAlpha = .5; c.font = `24px ${face}`; c.fillText(lines[1], 10, 83);
       }
-    }), transparent: true, depthWrite: false});
+    });
+    return material;
   }
 
   for (const room of rooms) {
@@ -334,9 +342,23 @@ for (const room of rooms) {
 }
 const roomButtons = [...document.querySelectorAll('[data-room]')];
 
+// dark: your system's setting, or 4:17 a.m. in New York; the 4:17 button overrides and is remembered
+const NIGHT_KEY = 'print-room-night';
+const prefersDark = matchMedia('(prefers-color-scheme: dark)');
+try {
+  const saved = localStorage.getItem(NIGHT_KEY);
+  if (saved === '1') nightOverride = true;
+  if (saved === '0') nightOverride = false;
+} catch { /* storage blocked: follow the system */ }
+function autoNight() {
+  return prefersDark.matches || clock.format(new Date()) === '04:17';
+}
 function updateNight() {
-  night = nightOverride ?? clock.format(new Date()) === '04:17';
-  document.body.classList.toggle('night-mode', night);
+  night = nightOverride ?? autoNight();
+  document.documentElement.classList.toggle('night-mode', night);
+  let chrome = '#ffffff';
+  if (night) chrome = '#000000';
+  document.querySelector('meta[name=theme-color]').content = chrome;
   $('night').setAttribute('aria-pressed', String(night));
   let hint = 'Preview the late-night gallery';
   if (night) hint = 'Return to the daytime gallery';
@@ -344,7 +366,17 @@ function updateNight() {
   sceneView?.invalidate();
   drawMap();
 }
-$('night').addEventListener('click', () => { nightOverride = !night; updateNight(); });
+$('night').addEventListener('click', () => {
+  nightOverride = !night;
+  // back in step with the system: stop overriding it
+  if (nightOverride === autoNight()) nightOverride = undefined;
+  try {
+    if (nightOverride === undefined) localStorage.removeItem(NIGHT_KEY);
+    else localStorage.setItem(NIGHT_KEY, String(Number(nightOverride)));
+  } catch { /* fine */ }
+  updateNight();
+});
+prefersDark.addEventListener('change', updateNight);
 setInterval(updateNight, 1000);
 
 const mapCanvas = $('map');
@@ -834,7 +866,8 @@ function walkable(T) {
   const canvas = renderer.domElement; $('mount').append(canvas);
   const scene = new T.Scene(); scene.background = new T.Color(0xdcdcdc);
   // fog to the background colour so rooms beyond the drawn window fade instead of popping
-  const dayAir = new T.Color(0xdcdcdc), nightAir = new T.Color(0x050505);
+  const dayAir = new T.Color(0xdcdcdc), nightAir = new T.Color(0x000000);
+  const markerDay = new T.Color(0x111111), markerNight = new T.Color(0xf2f2f2);
   scene.fog = new T.Fog(scene.background, 24, 64);
   const camera = new T.PerspectiveCamera(58, 1, .07, 90); camera.rotation.order = 'YXZ';
   const {faces, palette, roomGroups} = buildSpace(T, scene, works);
@@ -851,7 +884,7 @@ function walkable(T) {
     onchange: () => { if (pileActive()) invalidate(); },
   });
   roomGroups[PILE_ROOM].add(pile.mesh);
-  const paperDay = new T.Color(0xffffff), paperNight = new T.Color(0x6e6e6e);
+  const paperDay = new T.Color(0xffffff), paperNight = new T.Color(0x5a5a5a);
   const foot = {x: 0, z: 0};
   function pileActive() {
     return Math.abs(currentRoom - PILE_ROOM) <= 1;
@@ -1246,18 +1279,28 @@ function walkable(T) {
     scene.background.copy(dayAir).lerp(nightAir, light);
     scene.fog.color.copy(scene.background);
     pile.material.color.copy(paperDay).lerp(paperNight, light);
+    marker.material.color.copy(markerDay).lerp(markerNight, light);
   }
   function zoomTo(target) {
     if (zoomTarget === target) return;
     zoomTarget = target; invalidate();
   }
+  let peeking = false;
   canvas.addEventListener('mousedown', event => {
     if (event.button !== 1) return;
     event.preventDefault();  // no autoscroll
+    peeking = true;
     zoomTo(ZOOM);
   });
-  addEventListener('mouseup', event => { if (event.button === 1) zoomTo(1); });
-  addEventListener('blur', () => zoomTo(1));
+  // zoomed in, moving the mouse drifts the view across the painting, slowed by the zoom
+  addEventListener('mousemove', event => {
+    if (!peeking || !(event.buttons & 4)) return;
+    yaw -= event.movementX * .0028 / zoom;
+    pitch = T.MathUtils.clamp(pitch - event.movementY * .0028 / zoom, -1.05, 1.05);
+    invalidate();
+  });
+  addEventListener('mouseup', event => { if (event.button === 1) { peeking = false; zoomTo(1); } });
+  addEventListener('blur', () => { peeking = false; zoomTo(1); });
   canvas.addEventListener('auxclick', event => { if (event.button === 1) event.preventDefault(); });
   // two fingers: pinch to zoom; the view follows the fingers and eases back out when they lift
   const touches = new Map();

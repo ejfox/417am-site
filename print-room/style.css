@@ -90,9 +90,16 @@ button.near:hover:not(:disabled){background:none;color:var(--fg)}
 .index-piece.seen::after{content:'●';order:-1;margin-right:-8px}
 
 /* 4:17: the room goes dark */
-body.night-mode{--bg:#000;--fg:#fff;--text:#fff;--mid:#8a8a8a;--rule:#333}
-.night-mode .viewport,.night-mode .print-stage{background:#0a0a0a}
-.night-mode dialog::backdrop{background:#000000e6}
+/* after hours: OLED black, off-white ink, hairlines barely there; the art is the only bright thing */
+:root.night-mode{--bg:#000;--fg:#ededed;--text:#ededed;--text-strong:#ededed;--text-bright:#fff;--text-muted:#767676;--mid:#767676;--rule:#1f1f1f;--link:#ededed;--accent:#ededed;color-scheme:dark}
+.night-mode .viewport{background:#000}
+.night-mode .print-stage{background:#050505}
+.night-mode dialog::backdrop{background:#000000eb}
+.night-mode .scene-hud,.night-mode .seen-hud,.night-mode .reset,.night-mode .tour-caption,.night-mode .mobile-help,.night-mode .close,.night-mode .print-tools button,.night-mode .print-tools a,.night-mode dialog{border-color:#5a5a5a}
+.night-mode .room[aria-current]{background:#ededed;color:#000}
+.topbar a,.topbar a:visited{color:var(--fg)}
+body,.topbar,.rail,.controls,.room,.room-list,dialog{transition:background-color .6s ease,color .6s ease,border-color .6s ease}
+@media (prefers-reduced-motion:reduce){body,.topbar,.rail,.controls,.room,.room-list,dialog{transition:none}}
 
 .flat-mount{overflow:auto;touch-action:pan-y}
 .flat-room{min-height:100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-content:center;gap:32px;padding:56px 32px 24px}

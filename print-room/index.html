@@ -5,6 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="description" content="417am, every work, hung by likeness.">
   <meta name="theme-color" content="#ffffff">
+  <script>
+    // pick the theme before first paint, so a dark-mode visitor never sees a white flash
+    // same rule as the app: a saved choice, else the system setting or 4:17 in New York
+    var saved = null;
+    try { saved = localStorage.getItem('print-room-night'); } catch (e) { /* storage blocked */ }
+    var late = new Intl.DateTimeFormat('en-GB', {hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'America/New_York'}).format(new Date()) === '04:17';
+    var dark = saved === '1' || (saved !== '0' && (matchMedia('(prefers-color-scheme: dark)').matches || late));
+    if (dark) {
+      document.documentElement.classList.add('night-mode');
+      document.querySelector('meta[name=theme-color]').content = '#000000';
+    }
+  </script>
   <title>Print room · 417am</title>
   <link rel="preconnect" href="https://res.cloudinary.com" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/ejfox/academic.css@1.0.0/academic.css">
