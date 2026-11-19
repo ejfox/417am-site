@@ -918,12 +918,15 @@ function walkable(T) {
     applyZoom();
     return zoom !== zoomTarget;
   }
-  let sharpFace;
+  const sharpFaces = [];
   let sharpRequest;
   const forward = new T.Vector3();
   const printPosition = new T.Vector3();
   const offset = new T.Vector3();
   const coarse = matchMedia('(pointer: coarse)').matches;
+  // a 4K texture is ~45–90 MB of GPU memory; phones get 2K ones
+  let SHARP_KEEP = 3;
+  if (coarse) SHARP_KEEP = 2;
 
   function configure(texture, work, close = false) {
     texture.colorSpace = T.SRGBColorSpace;
@@ -955,8 +958,7 @@ function walkable(T) {
   }
   function release(face) {
     const data = face.userData;
-    if (sharpFace === face) sharpFace = undefined;
-    data.sharp?.dispose(); delete data.sharp;
+    dropSharp(face);
     data.preview?.dispose(); delete data.preview;
     blank(face);
   }
@@ -1207,16 +1209,19 @@ function walkable(T) {
   // swap in a sharper texture for the one print the visitor is standing in front of
   function refine() {
     camera.getWorldDirection(forward);
-    let candidate, closest = Infinity;
+    // the print you're looking at: the one nearest the middle of the view, within reach
+    // (zoomed in, a far print fills the view as a near one would: same test, scaled)
+    let candidate, centred = -1;
+    const cone = Math.cos(Math.atan(Math.tan(Math.acos(.65)) / zoom));
     for (const face of faces) {
       const work = face.userData.work;
       if (work.room !== currentRoom || !face.userData.preview) continue;
       face.getWorldPosition(printPosition);
       offset.subVectors(printPosition, camera.position);
       const d = offset.length();
-      // zoomed in, a far print fills the view as a near one would: same test, scaled
-      if (d / zoom > 4.6 || d >= closest || offset.dot(forward) / d < Math.cos(Math.atan(Math.tan(Math.acos(.65)) / zoom))) continue;
-      candidate = face; closest = d;
+      const aim = offset.dot(forward) / d;
+      if (d / zoom > 4.6 || aim < cone || aim <= centred) continue;
+      candidate = face; centred = aim;
     }
     // stopping in front of a print for a moment counts as seeing it; walking past doesn't
     const still = !glide && Math.hypot(velocity.x, velocity.z) < .6;
@@ -1226,20 +1231,32 @@ function walkable(T) {
       setTimeout(invalidate, 750);
     } else if (performance.now() - dwell.since >= 700) markSeen(candidate.userData.work);
     if (candidate && (Math.max(candidate.userData.work.w, candidate.userData.work.hw || 0) <= PREVIEW || candidate.userData.sharpFailed)) candidate = undefined;
-    if (sharpFace && sharpFace !== candidate) {
-      if (sharpFace.userData.preview) assign(sharpFace, sharpFace.userData.preview);
-      sharpFace.userData.sharp?.dispose(); delete sharpFace.userData.sharp; sharpFace = undefined;
+    if (!candidate) return;
+    // already sharp: keep it, and mark it most recently looked at
+    if (candidate.userData.sharp) {
+      sharpFaces.splice(sharpFaces.indexOf(candidate), 1); sharpFaces.push(candidate);
+      return;
     }
-    if (!candidate || candidate === sharpFace || sharpRequest) return;
+    if (sharpRequest) return;
     sharpRequest = candidate;
     const work = candidate.userData.work;
     let limit = 4096;
     if (coarse) limit = 2048;
     limit = Math.min(renderer.capabilities.maxTextureSize, limit);
     loader.loadAsync(work.texture(limit)).then(texture => {
-      if (work.room !== currentRoom || !candidate.userData.preview) { texture.dispose(); return; }
-      candidate.userData.sharp = configure(texture, work, true); sharpFace = candidate; assign(candidate, texture);
-    }).catch(() => { candidate.userData.sharpFailed = true; }).finally(() => { sharpRequest = undefined; });
+      if (!near(work.room, currentRoom, 1) || !candidate.userData.preview) { texture.dispose(); return; }
+      candidate.userData.sharp = configure(texture, work, true); assign(candidate, texture);
+      sharpFaces.push(candidate);
+      // keep the last few prints you looked at sharp, so looking back (or zooming again) is instant
+      while (sharpFaces.length > SHARP_KEEP) dropSharp(sharpFaces[0]);
+    }).catch(() => { candidate.userData.sharpFailed = true; }).finally(() => { sharpRequest = undefined; invalidate(); });
+  }
+  function dropSharp(face) {
+    const index = sharpFaces.indexOf(face);
+    if (index >= 0) sharpFaces.splice(index, 1);
+    if (!face.userData.sharp) return;
+    if (face.userData.preview) assign(face, face.userData.preview);
+    face.userData.sharp.dispose(); delete face.userData.sharp;
   }
   function render(now) {
     frame = 0;
