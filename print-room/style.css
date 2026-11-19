@@ -10,7 +10,7 @@ p{margin:0}
 a{color:var(--fg)}
 button{background:none;border:0;padding:0;cursor:pointer;color:var(--fg);font:inherit}
 button:disabled{cursor:default;color:var(--mid)}
-button:hover:not(:disabled),a:hover{background:var(--fg);color:var(--bg)}
+@media (hover:hover){button:hover:not(:disabled),a:hover{background:var(--fg);color:var(--bg)}}
 :focus-visible{outline:1px solid var(--fg);outline-offset:3px}
 [hidden]{display:none!important}
 
@@ -37,7 +37,7 @@ button:hover:not(:disabled),a:hover{background:var(--fg);color:var(--bg)}
 .canvas-mount canvas{cursor:grab;outline-offset:-2px}
 .canvas-mount canvas.dragging{cursor:grabbing}
 .canvas-mount canvas.over-print{cursor:zoom-in}
-.scene-hud,.seen-hud,.reset,.scene-status,.tour-caption,.touch-pad button{position:absolute;z-index:1;background:var(--bg);color:var(--fg);border:1px solid var(--fg)}
+.scene-hud,.seen-hud,.reset,.scene-status,.tour-caption,.mobile-help{position:absolute;z-index:1;background:var(--bg);color:var(--fg);border:1px solid var(--fg)}
 .scene-hud,.seen-hud{top:12px;padding:3px 7px;pointer-events:none;font-variant-numeric:tabular-nums}
 .scene-hud{left:12px}
 .seen-hud{right:48px;display:flex;gap:8px}
@@ -52,11 +52,10 @@ button:hover:not(:disabled),a:hover{background:var(--fg);color:var(--bg)}
 #tour-title{font-weight:400}
 .tour-progress{position:absolute;z-index:1;inset:auto 0 0;height:2px;pointer-events:none}
 .tour-progress span{display:block;height:100%;background:var(--fg);transform:scaleX(0);transform-origin:left}
-.touch-pad{display:none;position:absolute;bottom:12px;left:12px;gap:2px}
-.touch-pad button{position:static;width:38px;height:38px;touch-action:none}
 
 .controls{display:flex;align-items:center;justify-content:space-between;gap:12px;height:40px;padding:0 20px;border-top:1px solid var(--rule)}
-.mobile-help{display:none}
+.mobile-help{display:none;bottom:12px;left:50%;transform:translateX(-50%);margin:0;padding:3px 7px;white-space:nowrap;pointer-events:none;transition:opacity .6s ease .2s}
+.mobile-help.gone{opacity:0}
 .gallery-actions{display:flex;gap:16px}
 .end-tour{color:var(--mid)}
 
@@ -86,7 +85,7 @@ dialog::backdrop{background:#ffffffe6}
 .index h3{color:var(--mid);padding:14px 14px 4px}
 .index-piece{display:flex;justify-content:space-between;width:100%;text-align:left;padding:4px 14px;border-bottom:1px solid var(--rule)}
 .index-piece small{color:var(--mid);font-size:13px}
-.index-piece:hover small{color:var(--bg)}
+@media (hover:hover){.index-piece:hover small{color:var(--bg)}}
 .index-piece.seen::after{content:'●';order:-1;margin-right:-8px}
 
 /* 4:17: the room goes dark */
@@ -101,18 +100,45 @@ body.night-mode{--bg:#000;--fg:#fff;--text:#fff;--mid:#8a8a8a;--rule:#333}
 .flat-spotlight{grid-template-columns:1fr}.flat-spotlight img{max-height:55svh}
 .flat-salon{grid-template-columns:repeat(4,minmax(0,1fr));gap:20px}.flat-salon img{max-height:20svh}
 
-@media (pointer:coarse){.touch-pad{display:flex}.desktop-help{display:none}.mobile-help{display:inline}.tour-caption{bottom:60px}}
-@media (max-width:720px){
-  .topbar{padding:13px 12px 0;gap:16px}
-  .layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr) auto;height:calc(100svh - 44px)}
+@media (pointer:coarse){.desktop-help{display:none}.mobile-help{display:block}}
+/* phones: the room fills the screen; one row of numbers above, one row of actions below */
+@media (max-width:720px),(max-height:500px) and (pointer:coarse){
+  html,body{overflow:hidden;overscroll-behavior:none}
+  body{-webkit-tap-highlight-color:transparent}
+  .topbar{height:calc(40px + env(safe-area-inset-top));padding:calc(11px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));gap:16px}
+  .layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr);height:calc(100dvh - 40px - env(safe-area-inset-top))}
   .rail{display:contents}
   #intro-text,#map{display:none}
-  .room-list{grid-row:1;display:flex;overflow-x:auto;border-left:0;border-top:0;border-bottom:1px solid var(--rule)}
-  .room{flex:none;border-bottom:0;padding:4px 8px}
-  .gallery{grid-row:2}
-  .checklist{grid-row:3;padding:8px 12px;margin:0}
-  .controls{padding:0 12px}
+  .room-list{grid-row:1;display:flex;overflow-x:auto;scrollbar-width:none;border-left:0;border-top:0;border-bottom:1px solid var(--rule);padding:0 max(0px,env(safe-area-inset-right)) 0 max(0px,env(safe-area-inset-left))}
+  .room-list::-webkit-scrollbar{display:none}
+  .room{flex:none;border-bottom:0;padding:5px 10px;min-width:44px}
+  .gallery{grid-row:2;grid-column:1}
+  .viewport{min-height:0}
+  .room-list{grid-column:1}
+  /* checklist sits in the action row, left; Next and Tour on the right */
+  .checklist{grid-row:2;grid-column:1;align-self:end;justify-self:start;z-index:2;height:44px;margin:0 0 env(safe-area-inset-bottom) max(12px,env(safe-area-inset-left));padding:0}
+  .controls{height:calc(44px + env(safe-area-inset-bottom));padding:0 max(12px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px,env(safe-area-inset-left));justify-content:flex-end}
+  .gallery-actions{gap:20px}
+  .gallery-actions button{height:44px}
+  .scene-hud,.seen-hud,.reset{top:10px}
+  .scene-hud{left:max(10px,env(safe-area-inset-left))}
+  .reset{right:max(10px,env(safe-area-inset-right))}
+  .tour-caption{left:10px;bottom:10px}
   .near-list{grid-template-columns:repeat(3,minmax(0,1fr))}
   .near img{height:56px}
   .print-stage{height:46svh}
+  .inspect{width:100%;max-width:100%;max-height:100%;height:100%;margin:0;border:0;flex-direction:column}
+  .inspect[open]{display:flex}
+  .inspect .print-stage{flex:1;height:auto;min-height:0}
+  .dialog-bar{padding-top:calc(10px + env(safe-area-inset-top))}
+  .print-footer{padding-bottom:calc(10px + env(safe-area-inset-bottom));flex-wrap:wrap}
+  .index{width:100%;max-width:100%;height:100%;max-height:100%;margin:0;border:0}
+  .index .dialog-bar{padding-top:calc(10px + env(safe-area-inset-top))}
+}
+/* landscape phones: no room strip, the room gets the whole height */
+@media (max-height:500px) and (pointer:coarse){
+  .room-list{display:none}
+  .layout{grid-template-rows:0 minmax(0,1fr)}
+  .near img{height:44px}
+  .likeness{display:none}
 }

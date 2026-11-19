@@ -2,7 +2,7 @@
 <html lang="en" class="light">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="description" content="417am, every work, hung by likeness.">
   <meta name="theme-color" content="#ffffff">
   <title>Print room · 417am</title>
@@ -35,16 +35,10 @@
           <div><strong id="tour-title"></strong> <span id="tour-medium"></span></div>
         </div>
         <div class="tour-progress" id="tour-progress" hidden aria-hidden="true"><span></span></div>
-        <div class="touch-pad" aria-label="Movement">
-          <button type="button" data-move="KeyA" aria-label="Left">←</button>
-          <button type="button" data-move="KeyW" aria-label="Forward">↑</button>
-          <button type="button" data-move="KeyS" aria-label="Back">↓</button>
-          <button type="button" data-move="KeyD" aria-label="Right">→</button>
-        </div>
+        <p class="mobile-help" id="touch-hint">Drag to look · Tap to walk · Pinch to zoom</p>
       </div>
       <footer class="controls">
         <span class="desktop-help mid">WASD walk · Shift run · Space kick · Middle zoom · Click</span>
-        <span class="mobile-help mid">Swipe · Tap</span>
         <div class="gallery-actions">
           <button type="button" id="tour">Next <span aria-hidden="true">→</span></button>
           <button type="button" id="auto-tour" class="auto-tour" disabled><span aria-hidden="true" id="auto-tour-icon">▶</span> <span id="auto-tour-label">Tour</span></button>

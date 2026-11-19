@@ -760,10 +760,6 @@ window.addEventListener('keyup', event => {
   if (!event.shiftKey) keys.delete('Shift');
 });
 window.addEventListener('blur', () => keys.clear());
-document.querySelectorAll('[data-move]').forEach(button => {
-  button.addEventListener('pointerdown', event => { stopTour(); button.setPointerCapture(event.pointerId); keys.add(button.dataset.move); sceneView?.invalidate(); });
-  button.addEventListener('lostpointercapture', () => keys.delete(button.dataset.move));
-});
 
 // ---------- flat fallback (no WebGL) ----------
 
@@ -791,9 +787,8 @@ function fallback() {
   $('status').hidden = true;
   autoTour.disabled = false;
   $('reset').hidden = true;
-  document.querySelector('.touch-pad').hidden = true;
   document.querySelector('.desktop-help').textContent = 'Click';
-  document.querySelector('.mobile-help').textContent = 'Tap';
+  $('touch-hint').hidden = true;
   go(currentRoom);
   return {
     go,
@@ -1241,8 +1236,40 @@ function walkable(T) {
   addEventListener('mouseup', event => { if (event.button === 1) zoomTo(1); });
   addEventListener('blur', () => zoomTo(1));
   canvas.addEventListener('auxclick', event => { if (event.button === 1) event.preventDefault(); });
+  // two fingers: pinch to zoom; the view follows the fingers and eases back out when they lift
+  const touches = new Map();
+  let pinch;
+  function spread() {
+    const [a, b] = [...touches.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y) || 1;
+  }
+  function liftTouch(event) {
+    touches.delete(event.pointerId);
+    if (pinch && touches.size < 2) { pinch = undefined; zoomTo(1); }
+    // a third finger came and went: measure from the pair that's left, no jump
+    else if (pinch) pinch = {spread: spread(), zoom};
+  }
   canvas.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || drag) return;
+    $('touch-hint').classList.add('gone');
+    if (event.pointerType !== 'touch') return;
+    touches.set(event.pointerId, {x: event.clientX, y: event.clientY});
+    if (touches.size !== 2) return;
+    // a second finger turns the gesture into a pinch: no look, no tap
+    drag = undefined; canvas.classList.remove('dragging');
+    pinch = {spread: spread(), zoom};
+  }, true);
+  canvas.addEventListener('pointermove', event => {
+    if (!touches.has(event.pointerId)) return;
+    touches.set(event.pointerId, {x: event.clientX, y: event.clientY});
+    if (!pinch) return;
+    zoom = T.MathUtils.clamp(pinch.zoom * spread() / pinch.spread, 1, ZOOM);
+    zoomTarget = zoom; applyZoom(); invalidate();
+    event.stopImmediatePropagation();
+  }, true);
+  canvas.addEventListener('pointerup', liftTouch, true);
+  canvas.addEventListener('pointercancel', liftTouch, true);
+  canvas.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || drag || pinch) return;
     stopTour();
     glide = undefined; marker.visible = false;
     canvas.focus({preventScroll: true}); canvas.setPointerCapture(event.pointerId);
