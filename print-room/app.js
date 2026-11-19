@@ -23,16 +23,19 @@ function cloudinary(url, limit, lossless) {
 const rooms = DATA.rooms.map((room, index) => ({...room, index}));
 const works = DATA.works.map(work => {
   const dither = work.kind === 'studio';
+  // the best pixels we have: a 4K upscale where the original is smaller
+  let source = work.image, sourceWidth = work.w;
+  if (work.hi) { source = work.hi; sourceWidth = work.hw; }
   return {
     ...work,
     title: `no. ${work.id}`,
     dimensions: [work.w, work.h],
     width: work.dw,
-    original: work.image,
+    original: source,
     dither,
     texture(limit) {
-      if (work.w <= limit) return work.image;
-      return cloudinary(work.image, limit, dither);
+      if (sourceWidth <= limit) return source;
+      return cloudinary(source, limit, dither);
     },
   };
 });
@@ -845,6 +848,21 @@ function walkable(T) {
   const loader = new T.TextureLoader(); loader.setCrossOrigin('anonymous');
   const ray = new T.Raycaster(), pointer = new T.Vector2();
   let yaw = 0, pitch = 0, light = Number(night), frame = 0, last = 0, active = false, drag;
+  // hold the middle mouse button to zoom, eased in and out like a spyglass
+  const ZOOM = 4;
+  let baseFov = 58, zoom = 1, zoomTarget = 1;
+  function applyZoom() {
+    camera.fov = 2 * Math.atan(Math.tan(baseFov * Math.PI / 360) / zoom) * 180 / Math.PI;
+    camera.updateProjectionMatrix();
+  }
+  function easeZoom(wall) {
+    if (zoom === zoomTarget) return false;
+    if (reducedMotion.matches) zoom = zoomTarget;
+    else zoom += (zoomTarget - zoom) * (1 - Math.exp(-wall * 11));
+    if (Math.abs(zoomTarget - zoom) < .004) zoom = zoomTarget;
+    applyZoom();
+    return zoom !== zoomTarget;
+  }
   let tourFraming = false;
   let sharpFace;
   let sharpRequest;
@@ -945,7 +963,7 @@ function walkable(T) {
       const minimum = 2 * Math.atan(Math.tan(34 * Math.PI / 180) / ratio) * 180 / Math.PI;
       camera.fov = Math.min(105, Math.max(camera.fov, minimum));
     }
-    camera.updateProjectionMatrix(); renderer.setPixelRatio(Math.min(devicePixelRatio, 1.8)); renderer.setSize(w, h, false); invalidate();
+    baseFov = camera.fov; applyZoom(); renderer.setPixelRatio(Math.min(devicePixelRatio, 1.8)); renderer.setSize(w, h, false); invalidate();
   }
   function invalidate() {
     if (!frame) frame = requestAnimationFrame(render);
@@ -1145,7 +1163,8 @@ function walkable(T) {
       face.getWorldPosition(printPosition);
       offset.subVectors(printPosition, camera.position);
       const d = offset.length();
-      if (d > 4.6 || d >= closest || offset.dot(forward) / d < .65) continue;
+      // zoomed in, a far print fills the view as a near one would: same test, scaled
+      if (d / zoom > 4.6 || d >= closest || offset.dot(forward) / d < Math.cos(Math.atan(Math.tan(Math.acos(.65)) / zoom))) continue;
       candidate = face; closest = d;
     }
     // stopping in front of a print for a moment counts as seeing it; walking past doesn't
@@ -1155,7 +1174,7 @@ function walkable(T) {
       dwell = {face: candidate, since: performance.now()};
       setTimeout(invalidate, 750);
     } else if (performance.now() - dwell.since >= 700) markSeen(candidate.userData.work);
-    if (candidate && (candidate.userData.work.w <= PREVIEW || candidate.userData.sharpFailed)) candidate = undefined;
+    if (candidate && (Math.max(candidate.userData.work.w, candidate.userData.work.hw || 0) <= PREVIEW || candidate.userData.sharpFailed)) candidate = undefined;
     if (sharpFace && sharpFace !== candidate) {
       if (sharpFace.userData.preview) assign(sharpFace, sharpFace.userData.preview);
       sharpFace.userData.sharp?.dispose(); delete sharpFace.userData.sharp; sharpFace = undefined;
@@ -1180,6 +1199,7 @@ function walkable(T) {
     // glides keep wall-clock time so a slow frame doesn't turn them into slow motion
     if (glide) advanceGlide(wall);
     else if (walking()) step(dt);
+    const zooming = easeZoom(wall);
     camera.rotation.set(pitch, yaw, 0, 'YXZ'); camera.updateMatrixWorld();
     const lit = Number(night);
     if (light !== lit) {
@@ -1200,7 +1220,7 @@ function walkable(T) {
     refine();
     renderer.render(scene, camera);
     drawMap(camera.position, yaw);
-    if (glide || walking() || light !== lit || paper) invalidate();
+    if (glide || walking() || light !== lit || paper || zooming) invalidate();
     else last = 0;
   }
   function tint() {
@@ -1209,6 +1229,18 @@ function walkable(T) {
     scene.fog.color.copy(scene.background);
     pile.material.color.copy(paperDay).lerp(paperNight, light);
   }
+  function zoomTo(target) {
+    if (zoomTarget === target) return;
+    zoomTarget = target; invalidate();
+  }
+  canvas.addEventListener('mousedown', event => {
+    if (event.button !== 1) return;
+    event.preventDefault();  // no autoscroll
+    zoomTo(ZOOM);
+  });
+  addEventListener('mouseup', event => { if (event.button === 1) zoomTo(1); });
+  addEventListener('blur', () => zoomTo(1));
+  canvas.addEventListener('auxclick', event => { if (event.button === 1) event.preventDefault(); });
   canvas.addEventListener('pointerdown', event => {
     if (event.button !== 0 || drag) return;
     stopTour();
@@ -1222,8 +1254,9 @@ function walkable(T) {
     if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 4) drag.moved = true;
     if (!drag.moved) return;
     canvas.classList.add('dragging');
-    yaw -= (event.clientX - drag.x) * .0035;
-    pitch = T.MathUtils.clamp(pitch - (event.clientY - drag.y) * .0035, -1.05, 1.05);
+    // looking slows down as you zoom, so the view stays steady under the mouse
+    yaw -= (event.clientX - drag.x) * .0035 / zoom;
+    pitch = T.MathUtils.clamp(pitch - (event.clientY - drag.y) * .0035 / zoom, -1.05, 1.05);
     drag.x = event.clientX; drag.y = event.clientY; invalidate();
   });
   canvas.addEventListener('pointerup', event => {
