@@ -296,57 +296,6 @@ function entryView(room) {
   return viewFrom(ex, ez, [cx + (cx - ex), 2.1, cz + (cz - ez)]);
 }
 
-const route = [];
-for (const room of rooms) {
-  if (room.index > 0) {
-    const [dx, dz] = room.door;
-    const [cx, cz] = centre(room);
-    route.push({pose: viewFrom(dx, dz, [cx, 1.75, cz])});
-  }
-  route.push({pose: entryView(room), stop: {room: room.index, title: room.number, subtitle: plural(room.works.length, 'work')}, hold: 7});
-  route.push(lookAtPrint(byId.get(room.medoid)));
-}
-const entrance = entryView(rooms[0]);
-const stopCount = route.filter(waypoint => waypoint.stop).length;
-
-function makeTour(cuts) {
-  const timeline = [];
-  let duration = 0;
-  let from = entrance;
-  let number = 0;
-  for (const {pose, stop, hold} of route) {
-    if (!cuts) {
-      const distance = Math.hypot(pose.x - from.x, pose.z - from.z);
-      const travel = 1.1 + distance * .4;
-      timeline.push({start: duration, end: duration + travel, from, to: pose});
-      duration += travel;
-    }
-    if (stop) {
-      const label = {...stop, number: ++number, count: stopCount};
-      timeline.push({start: duration, end: duration + hold, to: pose, stop: label});
-      duration += hold;
-    }
-    from = pose;
-  }
-  return {timeline, duration};
-}
-
-function sampleTour(tour, elapsed) {
-  const moment = tour.timeline.find(segment => elapsed < segment.end) ?? tour.timeline.at(-1);
-  if (!moment.from) return {pose: moment.to, stop: moment.stop};
-  const {from, to} = moment;
-  const t = Math.max(0, (elapsed - moment.start) / (moment.end - moment.start));
-  const eased = t * t * (3 - 2 * t);
-  const angle = to.yaw - from.yaw;
-  const yawDelta = Math.atan2(Math.sin(angle), Math.cos(angle));
-  return {pose: {
-    x: from.x + (to.x - from.x) * eased,
-    z: from.z + (to.z - from.z) * eased,
-    yaw: from.yaw + yawDelta * eased,
-    pitch: from.pitch + (to.pitch - from.pitch) * eased,
-  }};
-}
-
 // ---------- page ----------
 
 const $ = (id) => document.getElementById(id);
@@ -369,7 +318,7 @@ let zoom = 1, panX = 0, panY = 0, fitWidth = 0, fitHeight = 0;
 let activePrintDrag;
 let sceneView;
 let lastFocus;
-let playback;
+let tour;
 
 const years = works.map(work => work.year);
 $('intro-text').textContent = `${works.length} works, ${Math.min(...years)}–${Math.max(...years)}. ${rooms.length} rooms, hung by likeness.`;
@@ -529,84 +478,154 @@ function markSeen(work) {
 }
 rooms.forEach(room => paintSeen(room.index));
 roomButtons.forEach((button, i) => button.addEventListener('click', () => visit(i)));
-$('tour').addEventListener('click', () => visit((currentRoom + 1) % rooms.length));
+$('tour').addEventListener('click', () => {
+  // during a tour, Next is the next piece; otherwise the next room
+  if (tour) { stepTour(1); return; }
+  visit((currentRoom + 1) % rooms.length);
+});
 $('reset').addEventListener('click', () => visit(currentRoom));
+
+// ---------- tour: the room you're in, piece by piece, at a viewing distance ----------
+// Walking off, looking around or opening a print only sets the tour aside; Resume
+// glides you back to the piece you left. End (or Esc) ends it.
+
+const HOLDS = [4, 8, 15, 30];
+const HOLD_KEY = 'print-room-hold';
+let holdSeconds = 8;
+try {
+  const saved = Number(localStorage.getItem(HOLD_KEY));
+  if (HOLDS.includes(saved)) holdSeconds = saved;
+} catch { /* storage blocked: default */ }
+const holdButton = $('tour-hold');
+function paintHold() {
+  holdButton.textContent = `${holdSeconds} s`;
+  holdButton.setAttribute('aria-label', `${holdSeconds} seconds on each piece`);
+}
+paintHold();
+holdButton.addEventListener('click', () => {
+  holdSeconds = HOLDS[(HOLDS.indexOf(holdSeconds) + 1) % HOLDS.length];
+  try { localStorage.setItem(HOLD_KEY, String(holdSeconds)); } catch { /* fine */ }
+  paintHold();
+  if (tour) paintProgress();
+});
 
 function setTourControls(state) {
   const labels = {idle: 'Tour', playing: 'Pause', paused: 'Resume', finished: 'Again'};
   const icons = {idle: '▶', playing: 'Ⅱ', paused: '▶', finished: '↻'};
   $('auto-tour-label').textContent = labels[state];
   $('auto-tour-icon').textContent = icons[state];
-  endTour.hidden = state === 'idle' || state === 'finished';
+  const off = state === 'idle' || state === 'finished';
+  endTour.hidden = off;
+  holdButton.hidden = off;
 }
 
-function displayTourFrame() {
-  const {pose, stop} = sampleTour(playback, playback.elapsed);
-  if (pose !== playback.pose) sceneView.setTourPose?.(pose);
-  playback.pose = pose;
-  tourProgress.firstElementChild.style.transform = `scaleX(${Math.min(playback.elapsed / playback.duration, 1)})`;
-  if (stop === playback.stop) return;
-  playback.stop = stop;
-  tourCaption.hidden = !stop;
-  if (!stop) return;
-  sceneView.showTourStop?.(stop);
-  $('tour-stop').textContent = `${stop.number} / ${stop.count}`;
-  $('tour-title').textContent = stop.title;
-  $('tour-medium').textContent = stop.subtitle;
+// start at the piece nearest to you, then carry on around the walls in hanging order
+function tourOrder(room) {
+  const pieces = room.works.map(id => byId.get(id));
+  const here = sceneView?.position?.();
+  let first = 0;
+  if (here) {
+    let best = Infinity;
+    pieces.forEach((work, i) => {
+      const d = Math.hypot(work.x - here.x, work.z - here.z);
+      if (d < best) { best = d; first = i; }
+    });
+  }
+  return [...pieces.slice(first), ...pieces.slice(0, first)];
+}
+
+function paintProgress() {
+  tourProgress.firstElementChild.style.transform = `scaleX(${Math.min(1, tour.held / holdSeconds)})`;
+}
+
+function moveToStop() {
+  const work = tour.order[tour.index];
+  tour.phase = 'moving'; tour.held = 0; tour.last = undefined;
+  tourCaption.hidden = false;
+  $('tour-stop').textContent = `${tour.index + 1} / ${tour.order.length}`;
+  $('tour-title').textContent = work.title;
+  $('tour-medium').textContent = `${work.year} · ${work.medium}`;
+  paintProgress();
+  const token = {};
+  tour.token = token;
+  sceneView.tourTo(work, () => {
+    if (!tour || tour.token !== token) return;
+    tour.phase = 'holding';
+    queueTourFrame();
+  });
 }
 
 function queueTourFrame() {
-  if (playback?.playing && !playback.frame && !document.hidden) playback.frame = requestAnimationFrame(advanceTour);
+  if (tour?.playing && tour.phase === 'holding' && !tour.frame && !document.hidden) tour.frame = requestAnimationFrame(advanceTour);
 }
 
 function advanceTour(now) {
-  playback.frame = 0;
-  if (!playback.playing || document.hidden) return;
-  if (playback.last !== undefined) playback.elapsed += Math.min(100, now - playback.last) / 1000;
-  playback.last = now;
-  displayTourFrame();
-  if (playback.elapsed >= playback.duration) stopTour('finished');
+  tour.frame = 0;
+  if (!tour.playing || tour.phase !== 'holding' || document.hidden) return;
+  if (tour.last !== undefined) tour.held += Math.min(100, now - tour.last) / 1000;
+  tour.last = now;
+  paintProgress();
+  if (tour.held >= holdSeconds) stepTour(1);
   else queueTourFrame();
 }
 
+function stepTour(by) {
+  const index = tour.index + by;
+  if (index >= tour.order.length) { finishTour('finished'); return; }
+  tour.index = Math.max(0, index);
+  tour.playing = true;
+  setTourControls('playing');
+  moveToStop();
+}
+
 function pauseTour() {
-  playback.playing = false;
-  playback.last = undefined;
-  cancelAnimationFrame(playback.frame);
-  playback.frame = 0;
+  tour.playing = false;
+  cancelAnimationFrame(tour.frame);
+  tour.frame = 0; tour.last = undefined;
   setTourControls('paused');
 }
 
-function stopTour(state = 'idle') {
-  if (!playback) return;
-  cancelAnimationFrame(playback.frame);
-  playback = undefined;
+// any hands-on move (walk, drag, kick, inspect, another room): set the tour aside
+function stopTour() {
+  if (!tour || tour.phase === 'away') return;
+  pauseTour();
+  tour.phase = 'away';
+  tour.token = undefined;
+}
+
+function finishTour(state = 'idle') {
+  if (!tour) return;
+  cancelAnimationFrame(tour.frame);
+  tour = undefined;
+  sceneView?.clearTour?.();
   tourCaption.hidden = true;
   tourProgress.hidden = true;
-  sceneView?.clearTour?.();
   setTourControls(state);
-  if (document.activeElement === endTour) autoTour.focus();
+  if (document.activeElement === endTour || document.activeElement === holdButton) autoTour.focus();
 }
 
 autoTour.addEventListener('click', () => {
-  if (playback?.playing) { pauseTour(); return; }
-  if (!playback) {
-    keys.clear();
-    playback = {...makeTour(reducedMotion.matches || !sceneView.setTourPose), elapsed: 0, frame: 0};
-    tourProgress.hidden = false;
-    displayTourFrame();
+  if (tour?.playing) { pauseTour(); return; }
+  if (tour) {
+    tour.playing = true;
+    setTourControls('playing');
+    if (tour.phase === 'away') moveToStop();
+    else queueTourFrame();
+    return;
   }
-  playback.playing = true;
+  keys.clear();
+  tour = {order: tourOrder(rooms[currentRoom]), index: 0, held: 0, playing: true, frame: 0};
+  tourProgress.hidden = false;
   setTourControls('playing');
-  queueTourFrame();
+  moveToStop();
 });
-endTour.addEventListener('click', () => stopTour());
+endTour.addEventListener('click', () => finishTour());
 document.addEventListener('visibilitychange', () => {
-  if (!playback) return;
-  playback.last = undefined;
+  if (!tour) return;
+  tour.last = undefined;
   if (document.hidden) {
-    cancelAnimationFrame(playback.frame);
-    playback.frame = 0;
+    cancelAnimationFrame(tour.frame);
+    tour.frame = 0;
   } else queueTourFrame();
 });
 
@@ -744,7 +763,15 @@ for (const room of rooms) {
 const moveKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyQ', 'KeyE']);
 window.addEventListener('keydown', event => {
   if (printDialog.open || indexDialog.open || event.metaKey || event.ctrlKey || event.altKey) return;
-  if (event.code === 'Escape' && playback) { event.preventDefault(); stopTour(); return; }
+  if (event.code === 'Escape' && tour) { event.preventDefault(); finishTour(); return; }
+  // on tour, the arrows step through the pieces
+  if (tour && (event.code === 'ArrowRight' || event.code === 'ArrowLeft') && (event.target === document.body || event.target.tagName === 'CANVAS')) {
+    event.preventDefault();
+    let by = 1;
+    if (event.code === 'ArrowLeft') by = -1;
+    stepTour(by);
+    return;
+  }
   if (event.code === 'ShiftLeft' || event.code === 'ShiftRight') { keys.add('Shift'); return; }
   if (event.code === 'Space' && (event.target === document.body || event.target.tagName === 'CANVAS')) {
     event.preventDefault();
@@ -793,7 +820,7 @@ function fallback() {
   return {
     go,
     invalidate() {},
-    showTourStop(stop) { if (stop.room !== currentRoom) setRoom(stop.room); go(stop.room, stop.work, true); },
+    tourTo(work, arrive) { if (work.room !== currentRoom) setRoom(work.room); go(work.room, work, true); arrive(); },
     clearTour() { go(currentRoom); },
   };
 }
@@ -858,7 +885,6 @@ function walkable(T) {
     applyZoom();
     return zoom !== zoomTarget;
   }
-  let tourFraming = false;
   let sharpFace;
   let sharpRequest;
   const forward = new T.Vector3();
@@ -930,23 +956,21 @@ function walkable(T) {
     if (!reducedMotion.matches && active) view.animate([{opacity: .54}, {opacity: 1}], {duration: 280, easing: 'ease-out'});
     active = true; invalidate();
   }
-  function frameForTour(enabled) {
-    if (tourFraming === enabled) return;
-    tourFraming = enabled;
-    resize();
-  }
   function updateCurrentRoom() {
     const room = roomAt(camera.position.x, camera.position.z, currentRoom);
     if (room !== currentRoom) setRoom(room);
   }
-  function setTourPose(pose) {
-    frameForTour(true);
-    glide = undefined; marker.visible = false;
-    velocity.x = 0; velocity.z = 0;
-    camera.position.set(pose.x, EYE_HEIGHT, pose.z);
-    yaw = pose.yaw; pitch = pose.pitch;
-    updateCurrentRoom();
-    invalidate();
+  // the tour: a slow glide to a viewing spot in front of the work; a cut if it hangs in another room
+  function tourTo(work, arrive) {
+    keys.clear();
+    const pose = lookAtPrint(work).pose;
+    if (roomAt(camera.position.x, camera.position.z, currentRoom) !== work.room) {
+      setRoom(work.room);
+      standAt(pose);
+      arrive();
+      return;
+    }
+    glideAlong([pose], arrive, true);
   }
   function resize() {
     const w = view.clientWidth, h = view.clientHeight;
@@ -954,10 +978,6 @@ function walkable(T) {
     const ratio = w / h; camera.aspect = ratio;
     camera.fov = 58;
     if (ratio < 1) camera.fov = Math.min(91, 58 + (1 - ratio) * 54);
-    if (tourFraming) {
-      const minimum = 2 * Math.atan(Math.tan(34 * Math.PI / 180) / ratio) * 180 / Math.PI;
-      camera.fov = Math.min(105, Math.max(camera.fov, minimum));
-    }
     baseFov = camera.fov; applyZoom(); renderer.setPixelRatio(Math.min(devicePixelRatio, 1.8)); renderer.setSize(w, h, false); invalidate();
   }
   function invalidate() {
@@ -1032,7 +1052,7 @@ function walkable(T) {
       if (canStand(x, z) && clearPath(a, via) && clearPath(via, b)) return via;
     }
   }
-  function glideAlong(poses, arrive) {
+  function glideAlong(poses, arrive, gentle = false) {
     velocity.x = 0; velocity.z = 0;
     glide = undefined;
     if (reducedMotion.matches) {
@@ -1060,7 +1080,10 @@ function walkable(T) {
       lengths.push(lengths[i - 1] + Math.max(.05, Math.hypot(b.x - a.x, b.z - a.z) + Math.abs(b.yaw - a.yaw) * .9));
     }
     const total = lengths.at(-1);
-    glide = {points, lengths, total, elapsed: 0, duration: Math.min(5, Math.max(.45, .35 + total / 7)), arrive};
+    let duration = Math.min(5, Math.max(.45, .35 + total / 7));
+    // the tour strolls: a few unhurried seconds from piece to piece
+    if (gentle) duration = Math.min(9, Math.max(2.4, 1.2 + total / 1.5));
+    glide = {points, lengths, total, elapsed: 0, duration, arrive};
     invalidate();
   }
   function advanceGlide(dt) {
@@ -1321,7 +1344,12 @@ function walkable(T) {
   tint();
 
   const opening = faces.filter(face => face.userData.work.room === currentRoom);
-  const api = {go, travel, standAt, kick, invalidate, setTourPose, nearRoom, clearTour: () => frameForTour(false), position: () => camera.position, yaw: () => yaw};
+  // End: stop where you are, mid-stride if need be
+  function clearTour() {
+    if (!glide) return;
+    glide = undefined; camera.position.y = EYE_HEIGHT; invalidate();
+  }
+  const api = {go, travel, standAt, kick, invalidate, tourTo, clearTour, nearRoom, position: () => camera.position, yaw: () => yaw};
   Promise.allSettled(opening.map(loadPreview)).then(results => {
     if (results.length && results.every(result => result.status === 'rejected')) { resizeObserver.disconnect(); renderer.dispose(); sceneView = fallback(); return; }
     $('status').hidden = true;
