@@ -11,7 +11,7 @@ const PILE_COUNT = 1024;
 
 const DOOR = 2.3;
 // one CRT in a bank (pipeline/layout.py uses the same sizes to hang them)
-const CRT_W = .62, CRT_H = .5, CRT_GAP = .03, CRT_DEPTH = .46;
+const CRT_GAP = .03, PLINTH = .32;
 const EYE_HEIGHT = 1.75;
 const H = DATA.H;
 const PREVIEW = 768;
@@ -68,7 +68,7 @@ function inBank(x, z) {
     const dx = x - screen.x, dz = z - screen.z;
     const along = dx * Math.cos(screen.yaw) - dz * Math.sin(screen.yaw);
     const out = dx * Math.sin(screen.yaw) + dz * Math.cos(screen.yaw);
-    return Math.abs(along) < screen.dw / 2 + .25 && out > -.3 && out < CRT_DEPTH + .3;
+    return Math.abs(along) < screen.dw / 2 + .45 && out > -.3 && out < 1.15;
   }));
 }
 
@@ -180,9 +180,42 @@ function buildSpace(T, scene, works) {
   }
   for (const spec of DATA.walls) wall(...spec);
 
+  // video rooms are black boxes: lined, house lights off, lit only by their screens
+  const blackout = immaterial(0x070707, 0x030303);
+  function lineRoom(room) {
+    const [x1, z1, x2, z2] = room.rect;
+    const inset = .1;
+    // [the wall's line, the lining just inside it, from, to, wall runs along x]
+    const sides = [[z1, z1 + inset, x1, x2, true], [z2, z2 - inset, x1, x2, true], [x1, x1 + inset, z1, z2, false], [x2, x2 - inset, z1, z2, false]];
+    for (const [wallLine, fixed, from, to, alongX] of sides) {
+      const gaps = [];
+      for (const [dx, dz, axis] of DATA.doors) {
+        if (alongX && axis !== 'x' && Math.abs(dz - wallLine) < .3 && dx > from && dx < to) gaps.push([dx - DOOR / 2 - .12, dx + DOOR / 2 + .12]);
+        if (!alongX && axis === 'x' && Math.abs(dx - wallLine) < .3 && dz > from && dz < to) gaps.push([dz - DOOR / 2 - .12, dz + DOOR / 2 + .12]);
+      }
+      gaps.sort((a, b) => a[0] - b[0]);
+      let start = from;
+      for (const [a, b] of [...gaps, [to, to]]) {
+        const length = a - start;
+        if (length > .05) {
+          const mid = (start + a) / 2;
+          if (alongX) box(length, H, .01, blackout, mid, H / 2, fixed, roomGroups[room.index]);
+          else box(.01, H, length, blackout, fixed, H / 2, mid, roomGroups[room.index]);
+        }
+        start = b;
+      }
+    }
+  }
+
   for (const room of rooms) {
     const [x1, z1, x2, z2] = room.rect;
     const [x, z] = centre(room);
+    if (room.screens) {
+      surface(x2 - x1, z2 - z1, blackout, x, .002, z).rotation.x = -Math.PI / 2;
+      surface(x2 - x1, z2 - z1, blackout, x, H - .002, z).rotation.x = Math.PI / 2;
+      lineRoom(room);
+      continue;
+    }
     const map = concreteCanvas.clone();
     map.wrapS = map.wrapT = T.RepeatWrapping;
     map.repeat.set((x2 - x1) / 6, (z2 - z1) / 6);
@@ -267,7 +300,10 @@ function buildSpace(T, scene, works) {
     const group = new T.Group();
     group.position.set(anchor.x, 0, anchor.z); group.rotation.y = anchor.yaw;
     roomGroups[room.index].add(group);
-    surface(2.6, .42, lettering([room.number], true, 1024, 166), -width / 2 + 1.3, high, .005, 0, group);
+    const sign = lettering([room.number], true, 1024, 166);
+    // on a black box's lining the number is light, day or night
+    if (room.screens) palette.find(entry => entry.material === sign).day.setHex(0x8a8a8a);
+    surface(2.6, .42, sign, -width / 2 + 1.3, high, .12, 0, group);
   }
 
   // ---------- video rooms: banks of stacked CRTs, and one big projection ----------
@@ -288,29 +324,69 @@ function buildSpace(T, scene, works) {
     };
     return material;
   }
+  // the light a screen throws: a pool on the floor in front, a halo on the wall behind.
+  // additive, black until the video plays; app code sets its brightness from the picture
+  const glowMap = pattern(256, 256, (c, w, h) => {
+    const glow = c.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2);
+    glow.addColorStop(0, '#ffffff'); glow.addColorStop(.35, '#ffffff80'); glow.addColorStop(.7, '#ffffff1c'); glow.addColorStop(1, '#ffffff00');
+    c.fillStyle = glow; c.fillRect(0, 0, w, h);
+  });
+  const screenGlows = [];
+  function glowing(w, h, x, y, z, flat, group) {
+    const material = new T.MeshBasicMaterial({color: 0x000000, map: glowMap, transparent: true, depthWrite: false, blending: T.AdditiveBlending, toneMapped: false});
+    const mesh = surface(w, h, material, x, y, z, 0, group);
+    if (flat) mesh.rotation.x = -Math.PI / 2;
+    mesh.renderOrder = -1;
+    return material;
+  }
+  // a fixed wobble per set, so the stack looks piled by hand
+  let wobbleSeed = 9157;
+  function wobble() {
+    wobbleSeed = (Math.imul(wobbleSeed, 1664525) + 1013904223) >>> 0;
+    return (wobbleSeed >>> 8) / 16777216 - .5;
+  }
   for (const room of rooms) {
     for (const screen of room.screens ?? []) {
       const group = new T.Group(); group.position.set(screen.x, 0, screen.z); group.rotation.y = screen.yaw;
       roomGroups[room.index].add(group);
+      const slots = [];
+      let top = 0;
       if (screen.kind === 'crt') {
-        for (let row = 0; row < screen.rows; row++) {
-          for (let col = 0; col < screen.cols; col++) {
-            const cx = -screen.dw / 2 + CRT_W / 2 + col * (CRT_W + CRT_GAP);
-            const cy = CRT_H / 2 + row * (CRT_H + CRT_GAP);
-            box(CRT_W, CRT_H, CRT_DEPTH, plastic, cx, cy, CRT_DEPTH / 2, group);
+        const deepest = Math.max(...screen.stack.map(([, w]) => w * .78));
+        box(screen.dw + .3, PLINTH, deepest + .25, plastic, 0, PLINTH / 2, (deepest + .25) / 2, group);
+        let y = PLINTH;
+        screen.stack.forEach(([count, w, h], row) => {
+          const depth = w * .78;
+          const rowWidth = count * w + (count - 1) * CRT_GAP;
+          for (let col = 0; col < count; col++) {
+            const set = new T.Group();
+            set.position.set(-rowWidth / 2 + w / 2 + col * (w + CRT_GAP), y + h / 2, .06 + wobble() * .08);
+            set.rotation.y = wobble() * .12;
+            group.add(set);
+            box(w, h, depth, plastic, 0, 0, depth / 2, set);
             const material = tube(true);
-            surface(CRT_W * .78, CRT_H * .76, material, cx - CRT_W * .06, cy + .01, CRT_DEPTH + .003, 0, group);
+            surface(w * .78, h * .76, material, -w * .06, .01, depth + .003, 0, set);
             // neighbours show different channels: run them along the diagonals
-            screenSlots.push({room: room.index, src: screen.src[(row + col) % screen.src.length], material});
+            slots.push({room: room.index, src: screen.src[(row + col) % screen.src.length], material});
           }
-        }
+          y += h + CRT_GAP;
+        });
+        top = y;
       } else {
         const y = 2.15;
         box(screen.dw + .1, screen.dh + .1, .04, bezel, 0, y, .02, group);
         const material = tube(false);
         surface(screen.dw, screen.dh, material, 0, y, .045, 0, group);
-        screenSlots.push({room: room.index, src: screen.src[0], material});
+        slots.push({room: room.index, src: screen.src[0], material});
+        top = y + screen.dh / 2;
       }
+      screenSlots.push(...slots);
+      const reach = screen.dw + 2.6;
+      screenGlows.push({
+        src: screen.src, slots, kind: screen.kind,
+        halo: glowing(reach + 1.2, top + 1.6, 0, top / 2 + .2, .015, false, group),
+        pool: glowing(reach, 4.2, 0, .004, 1.6, true, group),
+      });
     }
   }
 
@@ -329,7 +405,7 @@ function buildSpace(T, scene, works) {
     screen.userData.work = work; faces.push(screen);
     surface(.63, .158, lettering([`no. ${work.id}`, String(work.year)], false, 512, 128), work.width / 2 - .26, -height / 2 - .145, 0, 0, center);
   }
-  return {faces, palette, roomGroups, screenSlots};
+  return {faces, palette, roomGroups, screenSlots, screenGlows};
 }
 
 // ---------- tour ----------
@@ -949,7 +1025,7 @@ function walkable(T) {
   const markerDay = new T.Color(0x111111), markerNight = new T.Color(0xf2f2f2);
   scene.fog = new T.Fog(scene.background, 24, 64);
   const camera = new T.PerspectiveCamera(58, 1, .07, 90); camera.rotation.order = 'YXZ';
-  const {faces, palette, roomGroups, screenSlots} = buildSpace(T, scene, works);
+  const {faces, palette, roomGroups, screenSlots, screenGlows} = buildSpace(T, scene, works);
   // ---------- video: one <video> per clip, loaded and playing only within a room of you ----------
   const channels = new Map();
   for (const slot of screenSlots) {
@@ -971,15 +1047,54 @@ function walkable(T) {
       if (waiting || video.paused || !video.requestVideoFrameCallback) return;
       waiting = true; video.requestVideoFrameCallback(onFrame);
     };
-    const onFrame = () => { waiting = false; invalidate(); ask(); };
-    video.addEventListener('playing', () => {
-      for (const slot of channel.slots) {
-        if (slot.material.map === channel.texture) continue;
-        slot.material.map = channel.texture; slot.material.color.setHex(0xffffff); slot.material.needsUpdate = true;
+    const onFrame = () => { waiting = false; sample(channel); updateScreens(); invalidate(); ask(); };
+    video.addEventListener('playing', () => { channel.started = true; updateScreens(); ask(); invalidate(); });
+  }
+  // how bright the picture is right now: a tiny draw, read back, ten times a second per clip
+  const probe = document.createElement('canvas'); probe.width = 8; probe.height = 6;
+  const probeContext = probe.getContext('2d', {willReadFrequently: true});
+  function sample(channel) {
+    const now = performance.now();
+    if (now - (channel.sampled ?? 0) < 100) return;
+    channel.sampled = now;
+    try {
+      probeContext.drawImage(channel.video, 0, 0, 8, 6);
+      const pixels = probeContext.getImageData(0, 0, 8, 6).data;
+      let sum = 0;
+      for (let i = 0; i < pixels.length; i += 4) sum += pixels[i] + pixels[i + 1] + pixels[i + 2];
+      const level = sum / (pixels.length / 4) / 765;
+      channel.level = (channel.level ?? level) * .4 + level * .6;
+    } catch { channel.level = .35; /* a tainted frame: glow at a steady middle */ }
+  }
+  // every so often the whole stack snaps to one channel for a beat, then scatters back
+  const UNISON_EVERY = 26, UNISON_FOR = 2.6;
+  function updateScreens() {
+    const t = performance.now() / 1000;
+    const together = t % UNISON_EVERY < UNISON_FOR;
+    for (const glow of screenGlows) {
+      const lead = glow.src[Math.floor(t / UNISON_EVERY) % glow.src.length];
+      let light = 0, lit = 0;
+      for (const slot of glow.slots) {
+        let channel = channels.get(slot.src);
+        if (together && glow.kind === 'crt' && channels.get(lead).started) channel = channels.get(lead);
+        if (!channel.started) {
+          // not playing (yet, or ever): a dead tube, not someone else's picture
+          if (slot.material.map) { slot.material.map = null; slot.material.color.setHex(0x0b0b0b); slot.material.needsUpdate = true; }
+          continue;
+        }
+        if (slot.material.map !== channel.texture) {
+          slot.material.map = channel.texture; slot.material.color.setHex(0xffffff); slot.material.needsUpdate = true;
+        }
+        light += channel.level ?? .3; lit += 1;
       }
-      ask();
-      invalidate();
-    });
+      let level = 0;
+      if (lit) level = light / lit;
+      // the stack's glow follows its pictures; a projection throws more
+      let gain = .5;
+      if (glow.kind !== 'crt') gain = .7;
+      glow.halo.color.setScalar(level * gain * .55);
+      glow.pool.color.setScalar(level * gain * .4);
+    }
   }
   function screensNear(index) {
     for (const [src, channel] of channels) {
@@ -1419,6 +1534,10 @@ function walkable(T) {
     drawMap(camera.position, yaw);
     // without per-frame video callbacks, a playing screen keeps the loop running
     const screensLive = !('requestVideoFrameCallback' in HTMLVideoElement.prototype) && videoPlaying();
+    if (screensLive) {
+      for (const channel of channels.values()) if (channel.started) sample(channel);
+      updateScreens();
+    }
     if (glide || walking() || light !== lit || paper || zooming || screensLive) invalidate();
     else last = 0;
   }
