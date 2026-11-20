@@ -111,10 +111,22 @@ function buildSpace(T, scene, works) {
     palette.push({material, day: new T.Color(day), night: new T.Color(night)});
     return material;
   };
-  function pattern(width, height, paint) {
+  // Safari dithers canvas gradients per colour channel, and reading back a faint (low-alpha)
+  // pixel un-premultiplies that dither into big coloured specks. So every pattern is flattened
+  // to grey after painting, and a light or shadow spot (tint) keeps only its alpha.
+  function pattern(width, height, paint, tint) {
     const canvas = document.createElement('canvas');
     canvas.width = width; canvas.height = height;
-    paint(canvas.getContext('2d'), width, height);
+    const context = canvas.getContext('2d', {willReadFrequently: true});
+    paint(context, width, height);
+    const image = context.getImageData(0, 0, width, height);
+    const px = image.data;
+    for (let i = 0; i < px.length; i += 4) {
+      let grey = (px[i] + px[i + 1] + px[i + 2]) / 3;
+      if (tint !== undefined) grey = tint;
+      px[i] = px[i + 1] = px[i + 2] = grey;
+    }
+    context.putImageData(image, 0, 0);
     const map = new T.CanvasTexture(canvas); map.colorSpace = T.SRGBColorSpace;
     return map;
   }
@@ -248,7 +260,7 @@ function buildSpace(T, scene, works) {
   const shadow = pattern(128, 128, (c, w, h) => {
     const glow = c.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, w / 2);
     glow.addColorStop(0, '#000000aa'); glow.addColorStop(.51, '#00000055'); glow.addColorStop(1, '#00000000'); c.fillStyle = glow; c.fillRect(0, 0, w, h);
-  });
+  }, 0);
   const shadowMat = new T.MeshBasicMaterial({map: shadow, transparent: true, depthWrite: false, opacity: .5});
   const printShade = new T.MeshBasicMaterial({map: shadow, transparent: true, depthWrite: false, opacity: .48});
   // a pool of track light on the wall around each print; brighter after hours
@@ -256,7 +268,7 @@ function buildSpace(T, scene, works) {
     const glow = c.createRadialGradient(w / 2, h * .34, 2, w / 2, h * .46, w / 2);
     glow.addColorStop(0, '#ffffff'); glow.addColorStop(.42, '#ffffff8c'); glow.addColorStop(.78, '#ffffff1f'); glow.addColorStop(1, '#ffffff00');
     c.fillStyle = glow; c.fillRect(0, 0, w, h);
-  });
+  }, 255);
   const wash = immaterial(0x1a1a1a, 0x5c5c5c, {map: washMap, transparent: true, depthWrite: false, blending: T.AdditiveBlending});
 
   for (const [x, z, width, alongX] of DATA.benches) {
@@ -330,7 +342,7 @@ function buildSpace(T, scene, works) {
     const glow = c.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2);
     glow.addColorStop(0, '#ffffff'); glow.addColorStop(.35, '#ffffff80'); glow.addColorStop(.7, '#ffffff1c'); glow.addColorStop(1, '#ffffff00');
     c.fillStyle = glow; c.fillRect(0, 0, w, h);
-  });
+  }, 255);
   const screenGlows = [];
   function glowing(w, h, x, y, z, flat, group) {
     const material = new T.MeshBasicMaterial({color: 0x000000, map: glowMap, transparent: true, depthWrite: false, blending: T.AdditiveBlending, toneMapped: false});
