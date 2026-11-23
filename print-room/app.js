@@ -2,7 +2,7 @@
 // (pipeline/layout.py). Rooms, walls, doors, hang positions and the tour all come from
 // the data; nothing about the plan is hard-coded here.
 
-import {makePile} from './pile.js?v=0f8831e33b';
+import {makePile} from './pile.js?v=1121c13aa0';
 
 const DATA = await fetch('gallery.json?v=abd86cb683').then(response => response.json());
 // the entrance room's floor is covered in letter-size prints you can kick around
@@ -230,6 +230,9 @@ const ART_PX = 1080, CODE_W = 900, CODE_H = 1260, CODE_SCALE = 1.5, CODE_LINE = 
 const RUN_SECONDS = 360, MIN_RUN_SECONDS = 90, HOLD_SECONDS = 30, SETUP_SECONDS = 20, FADE = .95;
 // the playhead's reading pace, in statements a second
 const PLAYHEAD_LINES = 12;
+// a line that touches the canvas (not a comment): @ctx.anything, or a d3 line drawn into it
+const DRAWS = /^(?!\s*#).*(@ctx\b|@line\s+@)/;
+const FLASH_FADE = .9;
 // a trace the playhead can walk: each line at most twice (a loop shows two passes, then moves
 // on), and no line twice in a row
 function playable(trace) {
@@ -254,6 +257,9 @@ function station(name, source, make, made) {
   // heat: everything that ran lately, a faint wash. The playhead: one line at a time, walking
   // through the latest tick's statements at reading pace, with a short trail behind it.
   const heat = new Float32Array(lines.length + 2);
+  // lines that put ink on the canvas flash vulpes pink as the playhead passes them
+  const drawing = new Uint8Array(lines.length + 2), flash = new Float32Array(lines.length + 2);
+  lines.forEach((text, i) => { if (DRAWS.test(text)) drawing[i + 1] = 1; });
   let piece = null, phase = 'setup', clock = 0, ticksDone = 0, ticksTotal = 0, runFor = RUN_SECONDS;
   let scroll = 0, dark = false, failed = 0;
   let recording = [], lastTick = [], replay = [], replayAt = 0, playhead = 0, trail = [];
@@ -282,8 +288,8 @@ function station(name, source, make, made) {
     if (piece) artContext.drawImage(piece.canvas, 0, 0, ART_PX, ART_PX);
   }
   function drawCode() {
-    let paper = '#f4f4f2', ink = '#111111', mid = '#9a9a9a';
-    if (dark) { paper = '#070707'; ink = '#d6d6d6'; mid = '#5a5a5a'; }
+    let paper = '#f4f4f2', ink = '#111111', mid = '#9a9a9a', pink = '#e60067';
+    if (dark) { paper = '#070707'; ink = '#d6d6d6'; mid = '#5a5a5a'; pink = '#ff277d'; }
     const c = codeContext;
     c.setTransform(CODE_SCALE, 0, 0, CODE_SCALE, 0, 0);
     c.fillStyle = paper; c.fillRect(0, 0, CODE_W, CODE_H);
@@ -321,12 +327,20 @@ function station(name, source, make, made) {
         c.fillStyle = ink; c.fillRect(24, y + 4, CODE_W - 48, CODE_LINE);
         c.globalAlpha = 1;
       }
+      // a drawing line, just hit: pink over everything, fading
+      const lit = flash[line];
+      if (lit > .02) {
+        c.globalAlpha = Math.min(1, lit);
+        c.fillStyle = pink; c.fillRect(24, y + 4, CODE_W - 48, CODE_LINE);
+        c.globalAlpha = 1;
+      }
+      const inverted = here || lit > .5;
       c.fillStyle = mid;
-      if (here) c.fillStyle = paper;
+      if (inverted) c.fillStyle = paper;
       c.textAlign = 'right'; c.fillText(String(line), 66, y + CODE_LINE - 2);
       c.textAlign = 'left';
       c.fillStyle = ink;
-      if (here) c.fillStyle = paper;
+      if (inverted) c.fillStyle = paper;
       c.fillText(lines[index].slice(0, 86), 82, y + CODE_LINE - 2);
     }
     c.fillStyle = mid; c.fillRect(28, CODE_H - CODE_BOTTOM + 8, CODE_W - 56, 1);
@@ -334,7 +348,8 @@ function station(name, source, make, made) {
     if (piece) c.fillText(`seed ${piece.seed}`, 28, CODE_H - 26);
     c.textAlign = 'right'; c.fillText(made, CODE_W - 28, CODE_H - 26); c.textAlign = 'left';
   }
-  function step(dt) {
+  // budget: ms of ticks this frame may spend (the room lowers it when frames run slow)
+  function step(dt, budget = 6) {
     if (!piece && phase !== 'hold') begin();
     clock += dt;
     const fade = Math.pow(FADE, dt * 60);
@@ -351,7 +366,10 @@ function station(name, source, make, made) {
       if (playhead) trail.push(playhead);
       if (trail.length > 4) trail.shift();
       playhead = now;
+      if (drawing[playhead]) flash[playhead] = 1;
     }
+    const flashFade = Math.pow(FLASH_FADE, dt * 60);
+    for (let i = 0; i < flash.length; i++) flash[i] *= flashFade;
     if (!playhead) trail = [];
     if (phase === 'setup') {
       // setup ran in an instant; the playhead shows its path, so the wash follows the playhead
@@ -361,7 +379,7 @@ function station(name, source, make, made) {
       const due = Math.min(ticksTotal, Math.ceil(ticksTotal * Math.min(1, clock / runFor)));
       const start = performance.now();
       // a few ms of ticks a frame at most; `due` catches up over the next frames
-      while (ticksDone < due && performance.now() - start < 6) {
+      while (ticksDone < due && performance.now() - start < budget) {
         recording = [];
         try { piece.tick(); } catch (error) { console.warn(name, error); ticksDone = ticksTotal; break; }
         lastTick = recording;
@@ -373,12 +391,11 @@ function station(name, source, make, made) {
       begin();
     }
   }
-  // step() runs the script; paint() draws what it looks like now, only when someone will see it
-  function paint() {
+  // step() runs the script; the paints draw what it looks like now, only when someone will see it
+  function paintArt() {
     if (piece) artContext.drawImage(piece.canvas, 0, 0, ART_PX, ART_PX);
-    drawCode();
   }
-  return {art, code, step, paint, theme(isDark) { dark = isDark; drawCode(); }};
+  return {art, code, step, paintArt, paintCode: drawCode, theme(isDark) { dark = isDark; drawCode(); }};
 }
 // one station per script, shared by the 3D rooms and the flat fallback
 const liveStations = new Map();
@@ -1425,7 +1442,7 @@ function fallback() {
     let seconds = 0;
     if (flatLast) seconds = Math.min(.1, (now - flatLast) / 1000);
     flatLast = now;
-    for (const entry of live) { entry.step(seconds); entry.paint(); }
+    for (const entry of live) { entry.step(seconds); entry.paintArt(); entry.paintCode(); }
     flatFrame = requestAnimationFrame(runFlat);
   }
   function go(index, workAtStop, touring = false) {
@@ -1519,22 +1536,34 @@ function walkable(T) {
     }
   }
   const facing = new T.Vector3(), toward = new T.Vector3();
-  // step the scripts in this room; repaint the textures of those you can see. True while any run.
+  // Uploading a big canvas is the costly part (slowest in Safari). The code panel goes up ~10
+  // times a second, the slowly growing picture ~5. If frames still run slower than ~30 fps, the
+  // room eases off: fewer uploads, fewer ticks a frame, the script itself running slower.
+  let frameTime = 1 / 60, ease = 1;
   function stepScripts(seconds) {
     let running = false;
+    if (seconds > 0) frameTime += (Math.min(seconds, .25) - frameTime) * .05;
+    if (frameTime > 1 / 32) ease = Math.min(4, ease * 1.01);
+    else if (frameTime < 1 / 45) ease = Math.max(1, ease * .995);
     camera.getWorldDirection(facing);
     for (const mount of scriptMounts) {
       if (mount.room !== currentRoom || typeof mount.live !== 'object') continue;
-      mount.live.step(seconds);
+      mount.live.step(seconds / ease, 6 / ease);
       running = true;
+      mount.codeSince = (mount.codeSince ?? 0) + seconds;
+      mount.artSince = (mount.artSince ?? 0) + seconds;
       mount.center.getWorldPosition(toward).sub(camera.position);
-      // big textures: upload at most ~20 times a second, and only when you're facing them
-      mount.since = (mount.since ?? 0) + seconds;
-      if (mount.since < .05) continue;
       if (toward.length() > 20 || toward.normalize().dot(facing) < .1) continue;
-      mount.since = 0;
-      mount.live.paint();
-      mount.art.map.needsUpdate = true; mount.code.map.needsUpdate = true;
+      // never both in one frame: whichever is more overdue goes up (so on slow frames neither starves)
+      const codeDue = mount.codeSince / (.1 * ease), artDue = mount.artSince / (.2 * ease);
+      if (Math.max(codeDue, artDue) < 1) continue;
+      if (codeDue >= artDue) {
+        mount.codeSince = 0;
+        mount.live.paintCode(); mount.code.map.needsUpdate = true;
+      } else {
+        mount.artSince = 0;
+        mount.live.paintArt(); mount.art.map.needsUpdate = true;
+      }
     }
     return running;
   }

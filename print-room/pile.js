@@ -11,6 +11,9 @@ const GUTTER = 8;                     // px around each cell filled with the pri
 const SLOT = CELL_PX + GUTTER * 2;
 const GRAVITY = 9.8;
 const CELL = .5;                      // spatial grid for kicks and knock-ons
+const FLOOR_GAP = .003, PAPER_GAP = .0006;  // resting heights: off the floor, and between stacked sheets
+const LANDING = .4;                   // below this height a falling sheet looks for what it will land on
+const HALF_MAX = Math.hypot(LONG, LONG) / 2;
 
 export function makePile(T, {count, rect, inside, works, thumb, onchange, seed = 4170}) {
   let s = seed >>> 0;
@@ -97,9 +100,6 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
       if (inside(x, z)) break;
     }
     px[i] = x; pz[i] = z;
-    // every sheet rests at its own height so overlapping sheets never z-fight
-    rest[i] = .003 + i * .00005;
-    py[i] = rest[i];
     yaw[i] = rand() * Math.PI * 2;
     phase[i] = rand() * Math.PI * 2;
     if (rand() < .08) tilt[i] = Math.PI;       // a few landed face down
@@ -109,6 +109,8 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
     cells[i * 2 + 1] = 1 - (Math.floor(cell / COLS) + 1) / ROWS;
   }
   geometry.setAttribute('aCell', new T.InstancedBufferAttribute(cells, 2));
+  const half = new Float32Array(count);
+  for (let i = 0; i < count; i++) half[i] = Math.hypot(sw[i], sh[i]) / 2;
 
   const matrix = new T.Matrix4(), position = new T.Vector3(), quaternion = new T.Quaternion();
   const euler = new T.Euler(0, 0, 0, 'YXZ'), scale = new T.Vector3(1, 1, 1);
@@ -135,6 +137,37 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
     }
   }
   rebuild();
+  // Sheets stack: each rests one paper-gap above the highest sheet it overlaps. A fixed tiny
+  // offset per sheet (the old way) is finer than the depth buffer can tell apart a few metres
+  // off, so overlapping prints flickered through each other.
+  // do two sheets' footprints overlap on the floor? Separating axes: each sheet's two edges
+  // (width along (cos yaw, -sin yaw), height along (sin yaw, cos yaw)), seen from above
+  function overlap(i, j) {
+    const dx = px[j] - px[i], dz = pz[j] - pz[i];
+    for (const [a, w] of [[i, j], [j, i]]) {
+      const ca = Math.cos(yaw[a]), sa = Math.sin(yaw[a]), cw = Math.cos(yaw[w]), sw2 = Math.sin(yaw[w]);
+      for (const [ax, az, extent] of [[ca, -sa, sw[a] / 2], [sa, ca, sh[a] / 2]]) {
+        // the other sheet's half-width along this axis
+        const reach = Math.abs(cw * ax - sw2 * az) * sw[w] / 2 + Math.abs(sw2 * ax + cw * az) * sh[w] / 2;
+        if (Math.abs(dx * ax + dz * az) > extent + reach) return false;
+      }
+    }
+    return true;
+  }
+  function restOn(i, under) {
+    let top = FLOOR_GAP;
+    near(px[i], pz[i], half[i] + HALF_MAX, (j, d) => {
+      if (j === i || !under(j) || d >= half[i] + half[j] || !overlap(i, j)) return;
+      top = Math.max(top, rest[j] + PAPER_GAP);
+    });
+    // no cap: a cap would put the top sheets of a tall drift back in the same plane
+    return top;
+  }
+  for (let i = 0; i < count; i++) {
+    rest[i] = restOn(i, j => j < i);
+    py[i] = rest[i];
+    write(i);
+  }
   function near(x, z, radius, visit) {
     const reach = Math.ceil(radius / CELL);
     const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
@@ -227,6 +260,8 @@ export function makePile(T, {count, rect, inside, works, thumb, onchange, seed =
       if (inside(px[i], nz)) pz[i] = nz; else vz[i] *= -.35;
       py[i] += vy[i] * dt;
       if (py[i] > 4.6) { py[i] = 4.6; vy[i] = -Math.abs(vy[i]) * .3; }
+      // touching down: it lands on top of whatever already lies there
+      if (airborne && vy[i] < 0 && py[i] < LANDING) rest[i] = restOn(i, j => !awake[j] || py[j] <= rest[j] + .002);
       const floor = rest[i] + Math.abs(Math.sin(tilt[i])) * sh[i] / 2;
       if (py[i] <= floor) { py[i] = floor; vy[i] = Math.max(0, vy[i]); }
       const speed = Math.hypot(vx[i], vz[i]);
