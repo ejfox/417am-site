@@ -1370,7 +1370,11 @@ app.get("/print-room/", async (c) => {
   const file = await printRoomFile("index.html");
   if (!file) return c.text("not found", 404);
   c.header("Cache-Control", "public, max-age=300");
-  return c.body(file.body, 200, { "Content-Type": file.type });
+  // the same visit stats as the rest of the site (the id lives here, not in the print-room repo)
+  // (hash excluded: opening a work rewrites #id, which isn't a new page)
+  const tag = UMAMI_TAG.replace('data-performance="true"', 'data-performance="true" data-exclude-hash="true"');
+  const html = new TextDecoder().decode(file.body).replace("</head>", `${tag}\n</head>`);
+  return c.body(html, 200, { "Content-Type": file.type });
 });
 app.get("/print-room/:name", async (c) => {
   const file = await printRoomFile(c.req.param("name"));

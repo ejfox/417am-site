@@ -43,6 +43,16 @@ const works = DATA.works.map(work => {
 });
 const byId = new Map(works.map(work => [work.id, work]));
 
+// visit stats (Umami, served with the page by 417am.party). Each event at most once a visit
+// per subject, so walking back and forth doesn't count twice. Never blocks anything.
+const tracked = new Set();
+function track(name, data, key = '') {
+  const id = `${name}:${key}`;
+  if (tracked.has(id)) return;
+  tracked.add(id);
+  try { window.umami?.track(name, data); } catch { /* stats are optional */ }
+}
+
 function plural(n, word) {
   if (n === 1) return `${n} ${word}`;
   return `${n} ${word}s`;
@@ -588,6 +598,7 @@ function drawMap(position, yaw) {
 
 function setRoom(index) {
   currentRoom = index;
+  track('print-room-room', {room: rooms[index].number}, rooms[index].number);
   roomButtons.forEach((button, i) => {
     if (i === index) {
       button.setAttribute('aria-current', 'location');
@@ -803,6 +814,7 @@ autoTour.addEventListener('click', () => {
   }
   const order = tourOrder(rooms[currentRoom]);
   if (!order.length) return;  // a video room: nothing to step through
+  track('print-room-tour', {room: rooms[currentRoom].number}, rooms[currentRoom].number);
   keys.clear();
   tour = {order, index: 0, held: 0, playing: true, frame: 0};
   tourProgress.hidden = false;
@@ -825,6 +837,7 @@ function showPrint(work, restoreFocus) {
   if (!printDialog.open) lastFocus = restoreFocus ?? document.activeElement;
   keys.clear();
   const room = rooms[work.room];
+  track('print-room-work', {work: work.id, room: room.number}, work.id);
   $('piece-room').textContent = room.number;
   $('piece-title').textContent = `${work.title}, ${work.year}`;
   $('piece-medium').textContent = work.medium;
@@ -981,6 +994,7 @@ window.addEventListener('blur', () => keys.clear());
 // ---------- flat fallback (no WebGL) ----------
 
 function fallback() {
+  track('print-room-flat', {});
   const mount = $('mount');
   view.dataset.mode = 'images';
   mount.innerHTML = ''; mount.classList.add('flat-mount');
@@ -1562,6 +1576,7 @@ function walkable(T) {
   }
   function zoomTo(target) {
     if (zoomTarget === target) return;
+    if (target > 1) track('print-room-zoom', {});
     zoomTarget = target; invalidate();
   }
   let peeking = false;
@@ -1892,4 +1907,9 @@ addEventListener('keydown', event => {
   printCatalogue();
 }, true);
 // the browser's own Print menu: set it now; pictures fill in as they arrive
-addEventListener('beforeprint', setCatalogue);
+addEventListener('beforeprint', () => {
+  setCatalogue();
+  let kind = 'catalogue';
+  if (catalogueFor !== 'all') kind = 'sheet';
+  try { window.umami?.track('print-room-print', {kind, work: catalogueFor}); } catch { /* optional */ }
+});
