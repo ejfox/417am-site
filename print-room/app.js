@@ -2,9 +2,9 @@
 // (pipeline/layout.py). Rooms, walls, doors, hang positions and the tour all come from
 // the data; nothing about the plan is hard-coded here.
 
-import {makePile} from './pile.js';
+import {makePile} from './pile.js?v=0f8831e33b';
 
-const DATA = await fetch('gallery.json').then(response => response.json());
+const DATA = await fetch('gallery.json?v=abd86cb683').then(response => response.json());
 // the entrance room's floor is covered in letter-size prints you can kick around
 const PILE_ROOM = 0;
 const PILE_COUNT = 1024;
