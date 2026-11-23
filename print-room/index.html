@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="description" content="417am, every work, hung by likeness.">
+  <meta name="description" content="417am, every work, in one walkable gallery.">
   <meta name="theme-color" content="#ffffff">
   <script>
     // pick the theme before first paint, so a dark-mode visitor never sees a white flash
@@ -23,7 +23,7 @@
   <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.min.js" crossorigin>
   <link rel="preload" href="gallery.json?v=abd86cb683" as="fetch" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/ejfox/academic.css@1.0.0/academic.css">
-  <link rel="stylesheet" href="style.css?v=51a9b1a7bc">
+  <link rel="stylesheet" href="style.css?v=28ef485e3c">
 </head>
 <body>
   <header class="topbar">
@@ -65,7 +65,6 @@
   <dialog id="inspect" class="inspect" aria-labelledby="piece-title">
     <header class="dialog-bar"><div><span id="piece-room" class="mid"></span> <h2 id="piece-title"></h2></div><button type="button" class="close" data-close aria-label="Close">×</button></header>
     <div id="print-stage" class="print-stage" tabindex="0" aria-label="Print. Plus or minus to zoom, drag to pan."><img id="print" alt="" draggable="false"><span id="print-status" role="status"></span></div>
-    <section class="likeness" aria-labelledby="likeness-title"><h3 id="likeness-title" class="mid">Most alike</h3><div id="near-list" class="near-list"></div></section>
     <footer class="print-footer">
       <div><span id="piece-medium"></span> <span id="piece-size" class="mid"></span></div>
       <div class="print-tools"><button type="button" id="zoom-out" aria-label="Zoom out">−</button><button type="button" id="zoom-reset" aria-label="Reset zoom">Fit</button><button type="button" id="zoom-in" aria-label="Zoom in">+</button><a id="original">Page</a></div>
@@ -74,6 +73,6 @@
   <div id="catalogue" class="catalogue" aria-hidden="true"></div>
   <div id="preparing" class="preparing" role="status" hidden></div>
   <noscript><a href="/">417am</a></noscript>
-  <script type="module" src="app.js?v=c78a5115f7"></script>
+  <script type="module" src="app.js?v=ecec9e0bd1"></script>
 </body>
 </html>

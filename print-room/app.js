@@ -936,7 +936,7 @@ let tour;
 
 const years = works.map(work => work.year);
 const printRooms = rooms.filter(room => room.works.length).length;
-$('intro-text').textContent = `${works.length} works, ${Math.min(...years)}–${Math.max(...years)}. ${printRooms} rooms, hung by likeness.`;
+$('intro-text').textContent = `${works.length} works, ${Math.min(...years)}–${Math.max(...years)}. ${printRooms} rooms.`;
 
 for (const room of rooms) {
   const button = document.createElement('button');
@@ -1301,32 +1301,6 @@ function showPrint(work, restoreFocus) {
   if (print.complete && print.naturalWidth) fitPrint();
   history.replaceState(null, '', `#${work.id}`);
   markSeen(work);
-  showNeighbours(work);
-}
-// the works an image model finds most like this one, wherever they hang
-function showNeighbours(work) {
-  const list = $('near-list');
-  list.replaceChildren();
-  for (const id of work.near ?? []) {
-    const other = byId.get(id);
-    if (!other) continue;
-    const room = rooms[other.room];
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'near';
-    button.setAttribute('aria-label', `Inspect ${other.title}, room ${room.number}`);
-    const image = new Image(); image.alt = ''; image.loading = 'lazy'; image.decoding = 'async';
-    image.src = other.texture(240);
-    if (other.dither) image.classList.add('dither');
-    const label = document.createElement('span');
-    let where = room.number;
-    if (other.room === work.room) where = 'here';
-    label.textContent = `${other.id} · ${where}`;
-    button.classList.toggle('seen', seen.has(other.id));
-    button.append(image, label);
-    button.addEventListener('click', () => { visitWork(other); showPrint(other); });
-    list.append(button);
-  }
 }
 function fitPrint() {
   if (!printDialog.open || !print.naturalWidth) return;
@@ -2323,7 +2297,7 @@ function wholeCatalogue() {
   const hung = rooms.filter(room => room.works.length);
   const cover = tag('section', 'cat-cover');
   const title = tag('div', 'cat-title');
-  title.append(tag('h1', '', 'Print Room'), tag('p', 'cat-lede', `${works.length} works, ${yearsOf(works)}, hung by likeness in ${hung.length} rooms.`));
+  title.append(tag('h1', '', 'Print Room'), tag('p', 'cat-lede', `${works.length} works, ${yearsOf(works)}, in ${hung.length} rooms.`));
   const meta = tag('p', 'cat-meta');
   const printed = new Intl.DateTimeFormat('en-US', {day: 'numeric', month: 'long', year: 'numeric'}).format(new Date());
   meta.append(tag('span', '', '417am.party/print-room'), tag('span', '', printed));
@@ -2357,11 +2331,12 @@ function wholeCatalogue() {
   }
   const live = rooms.filter(isScriptRoom).map(room => room.number);
   const video = rooms.filter(isVideoRoom).map(room => room.number);
-  const colophon = tag('p', 'cat-colophon', 'The order is the hang: each work sits beside the ones it most resembles.');
-  if (live.length) colophon.textContent += ` Rooms ${roomRange(live)} run the bot's original scripts on fresh seeds.`;
-  if (video.length) colophon.textContent += ` Rooms ${roomRange(video)} hold video.`;
-  if (live.length || video.length) colophon.textContent += ' None of these are in print.';
-  index.append(list, colophon);
+  const notes = [];
+  if (live.length) notes.push(`Rooms ${roomRange(live)} run the bot's original scripts on fresh seeds.`);
+  if (video.length) notes.push(`Rooms ${roomRange(video)} hold video.`);
+  if (notes.length) notes.push('None of these are in print.');
+  index.append(list);
+  if (notes.length) index.append(tag('p', 'cat-colophon', notes.join(' ')));
   catalogue.append(index);
 }
 function singleSheet(work) {
@@ -2378,21 +2353,9 @@ function singleSheet(work) {
   const right = tag('div', 'cat-where');
   right.append(tag('p', '', `Room ${room.number}`), tag('p', 'cat-mid', work.url.replace(/^https?:\/\//, '')));
   caption.append(left, right);
-  const near = tag('div', 'cat-near');
-  for (const id of work.near ?? []) {
-    const other = byId.get(id);
-    if (!other) continue;
-    const figure = tag('figure');
-    const box = tag('div', 'cat-near-frame');
-    box.append(plateImage(other, 400));
-    figure.append(box, tag('figcaption', '', other.title));
-    near.append(figure);
-  }
-  const alike = tag('div', 'cat-alike');
-  alike.append(tag('h2', '', 'Most alike'), near);
   const meta = tag('p', 'cat-meta');
   meta.append(tag('span', '', '417am · Print Room'), tag('span', '', '417am.party/print-room'));
-  sheet.append(frame, caption, alike, meta);
+  sheet.append(frame, caption, meta);
   catalogue.append(sheet);
 }
 // the work on screen, if any: the inspect dialog's
