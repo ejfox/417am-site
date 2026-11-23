@@ -53,6 +53,310 @@ function track(name, data, key = '') {
   try { window.umami?.track(name, data); } catch { /* stats are optional */ }
 }
 
+// rooms without prints: black-box video, or the bot's scripts running live
+function isVideoRoom(room) {
+  return (room.screens ?? []).some(screen => screen.kind === 'crt' || screen.kind === 'projection');
+}
+function isScriptRoom(room) {
+  return (room.screens ?? []).some(screen => screen.kind === 'script');
+}
+// "24–26", "27 and 28", "05"
+function roomRange(numbers) {
+  if (numbers.length === 1) return numbers[0];
+  const consecutive = numbers.every((n, i) => i === 0 || Number(n) === Number(numbers[i - 1]) + 1);
+  if (consecutive && numbers.length > 2) return `${numbers[0]}–${numbers[numbers.length - 1]}`;
+  return `${numbers.slice(0, -1).join(', ')} and ${numbers[numbers.length - 1]}`;
+}
+
+// ---------- live scripts: the 2017-18 bot's own CoffeeScript, compiled and run in the browser ----------
+// Each script is compiled once, a trace call is put before every statement (mapped back to its
+// CoffeeScript line), and it runs on a fresh random seed, a few ticks a frame, forever. The code
+// panel lights each line as it runs; light fades, so a busy loop glows and setup flickers past.
+// Nothing here loads until someone walks near a script room.
+const CDN = 'https://cdn.jsdelivr.net/npm/';
+const LIBRARIES = {
+  coffee: 'coffeescript@2.7.0/lib/coffeescript-browser-compiler-modern/coffeescript.js',
+  acorn: 'acorn@8.12.1/dist/acorn.mjs',
+  astring: 'astring@1.9.0/dist/astring.mjs',
+  d3: 'd3@5.16.0/+esm',
+  chance: 'chance@1.1.12/+esm',
+  simplex: 'simplex-noise@2.4.0/+esm',
+  lodash: 'lodash-es@4.17.21/+esm',
+};
+let libraries = null;
+function loadLibraries() {
+  if (!libraries) {
+    const names = Object.keys(LIBRARIES);
+    libraries = Promise.all(names.map(name => import(CDN + LIBRARIES[name]))).then(modules => {
+      const out = {};
+      names.forEach((name, i) => { out[name] = modules[i]; });
+      return out;
+    });
+  }
+  return libraries;
+}
+const palettes = new Map();
+function loadPalettes(size) {
+  if (!palettes.has(size)) palettes.set(size, fetch(`${CDN}nice-color-palettes@3.0.0/${size}.json`).then(response => response.json()));
+  return palettes.get(size);
+}
+// require('nice-color-palettes/500') and friends, as named in the source
+function paletteSizes(source) {
+  const sizes = new Set();
+  for (const match of source.matchAll(/nice-color-palettes(?:\/(\d+))?/g)) sizes.add(match[1] ?? '100');
+  return [...sizes];
+}
+// the CoffeeScript line a compiled JS position came from: the first mapped position along the
+// statement's own line, else the nearest one before it (which can land on a comment above)
+function coffeeLine(map, line, column) {
+  for (let c = column; c < column + 160; c++) {
+    const found = map.sourceLocation([line, c]);
+    if (found) return found[0] + 1;
+  }
+  for (let l = line; l >= 0; l--) {
+    let c = column;
+    if (l !== line) c = 1000;
+    for (; c >= 0; c--) {
+      const found = map.sourceLocation([l, c]);
+      if (found) return found[0] + 1;
+    }
+  }
+  return 1;
+}
+function traceCall(line) {
+  return {type: 'ExpressionStatement', expression: {type: 'CallExpression', optional: false,
+    callee: {type: 'Identifier', name: '__trace'}, arguments: [{type: 'Literal', value: line, raw: String(line)}]}};
+}
+function instrument(lib, source) {
+  const compiled = lib.coffee.compile(source, {sourceMap: true, bare: true});
+  const ast = lib.acorn.parse(compiled.js, {ecmaVersion: 2022, locations: true, sourceType: 'script'});
+  const traced = statements => statements.flatMap(statement => {
+    const at = coffeeLine(compiled.sourceMap, statement.loc.start.line - 1, statement.loc.start.column);
+    return [traceCall(at), statement];
+  });
+  const visit = node => {
+    if (!node || typeof node.type !== 'string') return;
+    for (const key of Object.keys(node)) {
+      if (key === 'loc') continue;
+      const value = node[key];
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === 'object') visit(value);
+    }
+    if (node.type === 'Program' || node.type === 'BlockStatement') node.body = traced(node.body);
+    if (node.type === 'SwitchCase') node.consequent = traced(node.consequent);
+    if (node.type === 'ArrowFunctionExpression' && node.expression) {
+      node.expression = false;
+      node.body = {type: 'BlockStatement', body: traced([{type: 'ReturnStatement', argument: node.body, loc: node.body.loc}])};
+    }
+  };
+  visit(ast);
+  return lib.astring.generate(ast);
+}
+// @ejfox/four-seventeen 0.6.3, the skeleton every script extends, minus the file saving and logs
+function skeleton(lib) {
+  return class FourSeventeen {
+    constructor(seed, options) {
+      this.seed = seed; this.count = 500; this.numTicks = 1; this.bgColor = 'black';
+      this.opacity = .88; this.width = 1080; this.height = 1080;
+      if (options) Object.assign(this, options);
+    }
+    makeCanvas() {
+      if (!this.canvas) {
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = this.width; this.canvas.height = this.height;
+      }
+      this.ctx = this.canvas.getContext('2d');
+      if (this.blendMode) this.ctx.globalCompositeOperation = this.blendMode;
+      this.ctx.fillStyle = this.bgColor;
+      return this.ctx.fillRect(0, 0, this.width, this.height);
+    }
+    // init(), split so the ticks can be spread over frames
+    prepare() {
+      this.chance = new lib.chance.Chance(this.seed);
+      this.simplex = new lib.simplex.default();
+      if (this.randomizeCount) this.count = this.chance.integer({min: this.count * .25, max: this.count});
+      if (this.randomizeTicks) {
+        this.numTicks = this.chance.integer({min: this.numTicks * .1, max: this.numTicks});
+        if (this.minTicks) this.numTicks = lib.lodash.clamp(this.numTicks, this.minTicks, this.numTicks);
+      }
+      this.makeCanvas();
+      this.makeParticles();
+    }
+    makeParticles() {
+      this.data = lib.d3.range(this.count).map(() => {
+        const c = lib.d3.hsl('white'); c.opacity = this.opacity;
+        return {x: this.width / 2 + this.chance.floating({min: -250, max: 250}), y: this.height / 2 + this.chance.floating({min: -250, max: 250}), color: c.toString()};
+      });
+      return this.data;
+    }
+    tick() { this.ticks++; }
+    init() { this.prepare(); }
+    saveFile() {}
+  };
+}
+// one script, ready to run any number of times: returns make(seed, trace) -> art
+async function compileScript(name, source) {
+  const lib = await loadLibraries();
+  const sizes = paletteSizes(source);
+  const loaded = await Promise.all(sizes.map(loadPalettes));
+  const paletteBy = new Map(sizes.map((size, i) => [size, loaded[i]]));
+  const run = new Function('require', 'module', '__filename', '__trace', instrument(lib, source));
+  const shims = {
+    path: {basename: () => name},
+    yargs: {alias() { return this; }, argv: {}},
+    d3: lib.d3,
+    chance: lib.chance.Chance,
+    'simplex-noise': lib.simplex.default,
+    lodash: lib.lodash,
+    '@ejfox/four-seventeen': skeleton(lib),
+  };
+  const require = id => {
+    if (id.startsWith('nice-color-palettes')) return paletteBy.get(id.split('/')[1] ?? '100');
+    if (id in shims) return shims[id];
+    throw new Error(`${name}: no ${id} in the browser`);
+  };
+  return (seed, trace) => {
+    const module = {exports: {}};
+    run(require, module, `${name}.coffee`, trace);
+    const art = module.exports;
+    art.seed = seed;
+    return art;
+  };
+}
+// a station: the picture and its code, two canvases, advanced by step(dt)
+const ART_PX = 1024, CODE_W = 900, CODE_H = 1260, CODE_LINE = 23, CODE_TOP = 54, CODE_BOTTOM = 64;
+const RUN_SECONDS = 45, HOLD_SECONDS = 9, SETUP_SECONDS = 3;
+function station(name, source, make, made) {
+  const lines = source.split('\n');
+  const art = document.createElement('canvas'); art.width = art.height = ART_PX;
+  const code = document.createElement('canvas'); code.width = CODE_W; code.height = CODE_H;
+  const artContext = art.getContext('2d'), codeContext = code.getContext('2d');
+  const heat = new Float32Array(lines.length + 2);
+  let piece = null, phase = 'setup', clock = 0, setupTrace = [], ticksDone = 0, ticksTotal = 0, runFor = RUN_SECONDS;
+  let scroll = 0, dark = false, failed = 0, tracing = 'setup';
+  const trace = line => {
+    heat[line] = 1;
+    if (tracing === 'setup' && setupTrace.length < 4000) setupTrace.push(line);
+  };
+  function begin() {
+    const seed = Date.now() + Math.floor(Math.random() * 1000);
+    heat.fill(0); setupTrace = []; tracing = 'setup'; ticksDone = 0; clock = 0; phase = 'setup';
+    try {
+      piece = make(seed, trace);
+      piece.prepare();
+      piece.ticks = 0;
+      ticksTotal = piece.numTicks + 1;  // the skeleton's tickTil runs 0..numTicks inclusive
+      // a script of a few ticks still takes a few seconds; a long one, at most RUN_SECONDS
+      runFor = Math.min(RUN_SECONDS, Math.max(5, ticksTotal * 1.2));
+      failed = 0;
+    } catch (error) {
+      console.warn(name, error);
+      failed += 1; piece = null; phase = 'hold';
+    }
+    heat.fill(0); tracing = 'run';
+    artContext.fillStyle = '#000'; artContext.fillRect(0, 0, ART_PX, ART_PX);
+    if (piece) artContext.drawImage(piece.canvas, 0, 0, ART_PX, ART_PX);
+  }
+  function drawCode() {
+    let paper = '#f4f4f2', ink = '#111111', mid = '#9a9a9a';
+    if (dark) { paper = '#070707'; ink = '#d6d6d6'; mid = '#5a5a5a'; }
+    const c = codeContext;
+    c.fillStyle = paper; c.fillRect(0, 0, CODE_W, CODE_H);
+    c.font = '500 15px "Helvetica Neue", Helvetica, Arial, sans-serif'; c.textBaseline = 'alphabetic';
+    c.fillStyle = ink; c.textAlign = 'left'; c.fillText(`${name}.coffee`, 28, 34);
+    c.fillStyle = mid; c.textAlign = 'right';
+    let status = 'compiling';
+    if (piece && phase === 'setup') status = 'makeParticles';
+    if (piece && phase === 'run') status = `tick ${ticksDone.toLocaleString('en-US')} / ${ticksTotal.toLocaleString('en-US')}`;
+    if (piece && phase === 'hold') status = 'done';
+    c.fillText(status, CODE_W - 28, 34);
+    c.textAlign = 'left';
+    c.fillRect(28, 44, CODE_W - 56, 1);
+    // follow the light: centre on where the heat is
+    let weight = 0, sum = 0;
+    for (let i = 1; i < heat.length; i++) { weight += heat[i]; sum += heat[i] * i; }
+    const visible = Math.floor((CODE_H - CODE_TOP - CODE_BOTTOM) / CODE_LINE);
+    if (weight > .05) {
+      const target = Math.max(0, Math.min(lines.length - visible, sum / weight - visible / 2));
+      scroll += (target - scroll) * .12;
+    }
+    const first = Math.max(0, Math.floor(scroll));
+    c.font = '15px "SF Mono", Menlo, Consolas, monospace';
+    for (let row = 0; row < visible + 1; row++) {
+      const index = first + row;
+      if (index >= lines.length) break;
+      const y = CODE_TOP + (index - scroll) * CODE_LINE;
+      if (y < CODE_TOP - CODE_LINE || y > CODE_H - CODE_BOTTOM) continue;
+      const h = heat[index + 1];
+      if (h > .015) {
+        c.globalAlpha = Math.min(1, h);
+        c.fillStyle = ink; c.fillRect(24, y + 4, CODE_W - 48, CODE_LINE);
+        c.globalAlpha = 1;
+      }
+      c.fillStyle = mid;
+      if (h > .5) c.fillStyle = paper;
+      c.textAlign = 'right'; c.fillText(String(index + 1), 66, y + CODE_LINE - 2);
+      c.textAlign = 'left';
+      c.fillStyle = ink;
+      if (h > .5) c.fillStyle = paper;
+      c.fillText(lines[index].slice(0, 86), 82, y + CODE_LINE - 2);
+    }
+    c.fillStyle = mid; c.fillRect(28, CODE_H - CODE_BOTTOM + 8, CODE_W - 56, 1);
+    c.font = '15px "Helvetica Neue", Helvetica, Arial, sans-serif';
+    if (piece) c.fillText(`seed ${piece.seed}`, 28, CODE_H - 26);
+    c.textAlign = 'right'; c.fillText(made, CODE_W - 28, CODE_H - 26); c.textAlign = 'left';
+  }
+  function step(dt) {
+    if (!piece && phase !== 'hold') begin();
+    clock += dt;
+    const fade = Math.pow(.88, dt * 60);
+    for (let i = 0; i < heat.length; i++) heat[i] *= fade;
+    if (phase === 'setup') {
+      // replay what setup touched, quickly, so it reads as a flicker down the file
+      const shown = Math.floor(setupTrace.length * Math.min(1, clock / SETUP_SECONDS));
+      for (let i = Math.max(0, shown - 3); i < shown; i++) heat[setupTrace[i]] = 1;
+      if (clock >= SETUP_SECONDS) { phase = 'run'; clock = 0; }
+    } else if (phase === 'run') {
+      const due = Math.min(ticksTotal, Math.ceil(ticksTotal * Math.min(1, clock / runFor)));
+      const start = performance.now();
+      while (ticksDone < due && performance.now() - start < 12) {
+        try { piece.tick(); } catch (error) { console.warn(name, error); ticksDone = ticksTotal; break; }
+        ticksDone += 1;
+      }
+      artContext.drawImage(piece.canvas, 0, 0, ART_PX, ART_PX);
+      if (ticksDone >= ticksTotal) { phase = 'hold'; clock = 0; }
+    } else if (clock >= HOLD_SECONDS && failed < 3) {
+      piece = null;
+      begin();
+    }
+    drawCode();
+  }
+  return {art, code, step, theme(isDark) { dark = isDark; drawCode(); }};
+}
+// one station per script, shared by the 3D rooms and the flat fallback
+const liveStations = new Map();
+const readyStations = [];
+function madeLine(ids) {
+  const present = ids.filter(id => byId.has(id));
+  if (!present.length) return '';
+  const first = byId.get(present[0]);
+  let line = `made no. ${first.id}, room ${rooms[first.room].number}`;
+  if (present.length > 1) line += `, and ${present.length - 1} more in the show`;
+  return line;
+}
+function liveStation(screen) {
+  if (!liveStations.has(screen.id)) {
+    const ready = compileScript(screen.id, screen.source).then(make => {
+      const live = station(screen.id, screen.source, make, madeLine(screen.made ?? []));
+      live.theme(night);
+      readyStations.push(live);
+      return live;
+    });
+    liveStations.set(screen.id, ready);
+  }
+  return liveStations.get(screen.id);
+}
+
 function plural(n, word) {
   if (n === 1) return `${n} ${word}`;
   return `${n} ${word}s`;
@@ -232,7 +536,7 @@ function buildSpace(T, scene, works) {
   for (const room of rooms) {
     const [x1, z1, x2, z2] = room.rect;
     const [x, z] = centre(room);
-    if (room.screens) {
+    if (isVideoRoom(room)) {
       surface(x2 - x1, z2 - z1, blackout, x, .002, z).rotation.x = -Math.PI / 2;
       surface(x2 - x1, z2 - z1, blackout, x, H - .002, z).rotation.x = Math.PI / 2;
       lineRoom(room);
@@ -318,13 +622,14 @@ function buildSpace(T, scene, works) {
     let anchor = byId.get(room.works[0]);
     let width = anchor?.width;
     let high = 3.45;
-    if (!anchor) { anchor = room.screens[0]; width = anchor.dw; high = 4.2; }  // clear of the projection
+    if (!anchor) { anchor = room.screens[0]; width = anchor.dw; }
+    if (isVideoRoom(room)) high = 4.2;  // clear of the projection
     const group = new T.Group();
     group.position.set(anchor.x, 0, anchor.z); group.rotation.y = anchor.yaw;
     roomGroups[room.index].add(group);
     const sign = lettering([room.number], true, 1024, 166);
     // on a black box's lining the number is light, day or night
-    if (room.screens) palette.find(entry => entry.material === sign).day.setHex(0x8a8a8a);
+    if (isVideoRoom(room)) palette.find(entry => entry.material === sign).day.setHex(0x8a8a8a);
     surface(2.6, .42, sign, -width / 2 + 1.3, high, .12, 0, group);
   }
 
@@ -354,6 +659,7 @@ function buildSpace(T, scene, works) {
     c.fillStyle = glow; c.fillRect(0, 0, w, h);
   }, 255);
   const screenGlows = [];
+  const scriptMounts = [];
   function glowing(w, h, x, y, z, flat, group) {
     const material = new T.MeshBasicMaterial({color: 0x000000, map: glowMap, transparent: true, depthWrite: false, blending: T.AdditiveBlending, toneMapped: false});
     const mesh = surface(w, h, material, x, y, z, 0, group);
@@ -369,6 +675,25 @@ function buildSpace(T, scene, works) {
   }
   for (const room of rooms) {
     for (const screen of room.screens ?? []) {
+      if (screen.kind === 'script') {
+        // a station: the picture, framed like a print, and its code beside it on the wall.
+        // blank paper until the script compiles; app code hands both canvases over then
+        const center = new T.Group(); center.position.set(screen.x, 1.58, screen.z); center.rotation.y = screen.yaw;
+        roomGroups[room.index].add(center);
+        const side = screen.dh, codeWidth = screen.dw - side - .3;
+        const artX = -screen.dw / 2 + side / 2, codeX = screen.dw / 2 - codeWidth / 2;
+        const pool = surface(screen.dw + 1.2, side + 1.6, wash, 0, .35, -.0125, 0, center);
+        pool.renderOrder = -1;
+        surface(side * 1.2, side * 1.24, printShade, artX + .014, -.063, -.012, 0, center);
+        box(side + .106, side + .106, .047, dark, artX, 0, .028, center);
+        box(side + .053, side + .053, .006, edge, artX, 0, .053, center);
+        const art = new T.MeshBasicMaterial({color: 0xd6d6d4, toneMapped: false});
+        surface(side, side, art, artX, 0, .058, 0, center);
+        const code = new T.MeshBasicMaterial({color: 0xd6d6d4, toneMapped: false});
+        surface(codeWidth, side, code, codeX, 0, .012, 0, center);
+        scriptMounts.push({room: room.index, screen, art, code, center});
+        continue;
+      }
       const group = new T.Group(); group.position.set(screen.x, 0, screen.z); group.rotation.y = screen.yaw;
       roomGroups[room.index].add(group);
       const slots = [];
@@ -427,7 +752,7 @@ function buildSpace(T, scene, works) {
     screen.userData.work = work; faces.push(screen);
     surface(.63, .158, lettering([`no. ${work.id}`, String(work.year)], false, 512, 128), work.width / 2 - .26, -height / 2 - .145, 0, 0, center);
   }
-  return {faces, palette, roomGroups, screenSlots, screenGlows};
+  return {faces, palette, roomGroups, screenSlots, screenGlows, scriptMounts};
 }
 
 // ---------- tour ----------
@@ -460,6 +785,11 @@ function lookAtPrint(work, hold = 6) {
 function entryView(room) {
   const [cx, cz] = centre(room);
   const [ex, ez] = room.entry;
+  // a script room turns you to its first station: it may hang on a side wall
+  if (isScriptRoom(room)) {
+    const first = room.screens[0];
+    return viewFrom(ex, ez, [first.x, 1.58, first.z]);
+  }
   return viewFrom(ex, ez, [cx + (cx - ex), 2.1, cz + (cz - ez)]);
 }
 
@@ -496,7 +826,8 @@ for (const room of rooms) {
   button.type = 'button'; button.className = 'room'; button.dataset.room = String(room.index);
   const number = document.createElement('span'); number.className = 'room-number'; number.textContent = room.number;
   let label = `Room ${room.number}, ${plural(room.works.length, 'work')}`;
-  if (room.screens) label = `Room ${room.number}, video`;
+  if (isVideoRoom(room)) label = `Room ${room.number}, video`;
+  if (isScriptRoom(room)) label = `Room ${room.number}, scripts running live`;
   button.setAttribute('aria-label', label);
   const tally = document.createElement('span'); tally.className = 'room-seen'; tally.title = 'Seen';
   button.append(number, tally);
@@ -525,6 +856,7 @@ function updateNight() {
   let hint = 'Preview the late-night gallery';
   if (night) hint = 'Return to the daytime gallery';
   $('night').title = hint;
+  for (const live of readyStations) live.theme(night);
   sceneView?.invalidate();
   drawMap();
 }
@@ -653,7 +985,8 @@ function paintSeen(index) {
   const count = seenIn(room);
   const tally = roomButtons[index].querySelector('.room-seen');
   $('seen-count').textContent = `${seen.size} / ${works.length}`;
-  if (room.screens) { tally.textContent = 'video'; return; }
+  if (isVideoRoom(room)) { tally.textContent = 'video'; return; }
+  if (isScriptRoom(room)) { tally.textContent = 'live'; return; }
   tally.textContent = `${count}/${room.works.length}`;
   roomButtons[index].classList.toggle('complete', count === room.works.length);
   $('seen-count').textContent = `${seen.size} / ${works.length}`;
@@ -1000,6 +1333,19 @@ function fallback() {
   mount.innerHTML = ''; mount.classList.add('flat-mount');
   const grid = document.createElement('div'); grid.className = 'flat-room';
   mount.append(grid);
+  // the scripts on show in the flat view, stepped while they are on the page
+  // one frame loop at most: it stops itself when the room's stations leave the page
+  let flatLive = [], flatLast = 0, flatFrame = 0;
+  function runFlat(now) {
+    flatFrame = 0;
+    const live = flatLive.filter(entry => entry.art.isConnected);
+    if (!live.length) { flatLast = 0; return; }
+    let seconds = 0;
+    if (flatLast) seconds = Math.min(.1, (now - flatLast) / 1000);
+    flatLast = now;
+    for (const entry of live) entry.step(seconds);
+    flatFrame = requestAnimationFrame(runFlat);
+  }
   function go(index, workAtStop, touring = false) {
     grid.replaceChildren();
     grid.classList.toggle('flat-spotlight', Boolean(workAtStop));
@@ -1014,8 +1360,21 @@ function fallback() {
       const label = document.createElement('span'); label.textContent = work.title;
       button.append(image, label); button.addEventListener('click', () => showPrint(work)); grid.append(button);
     }
+    // a script room without 3D: the picture and the code, side by side, still running
+    flatLive = [];
+    for (const screen of rooms[index].screens ?? []) {
+      if (screen.kind !== 'script') continue;
+      const pair = document.createElement('div'); pair.className = 'flat-live';
+      grid.append(pair);
+      liveStation(screen).then(live => {
+        if (!pair.isConnected) return;
+        pair.append(live.art, live.code);
+        flatLive.push(live);
+        if (!flatFrame) flatFrame = requestAnimationFrame(runFlat);
+      }).catch(error => console.warn(screen.id, error));
+    }
     // a video room without 3D: just the clips, muted and looping
-    const clips = new Set((rooms[index].screens ?? []).flatMap(screen => screen.src));
+    const clips = new Set((rooms[index].screens ?? []).flatMap(screen => screen.src ?? []));
     for (const src of clips) {
       const video = document.createElement('video');
       video.src = src; video.muted = true; video.loop = true; video.autoplay = true; video.playsInline = true;
@@ -1051,7 +1410,40 @@ function walkable(T) {
   const markerDay = new T.Color(0x111111), markerNight = new T.Color(0xf2f2f2);
   scene.fog = new T.Fog(scene.background, 24, 64);
   const camera = new T.PerspectiveCamera(58, 1, .07, 90); camera.rotation.order = 'YXZ';
-  const {faces, palette, roomGroups, screenSlots, screenGlows} = buildSpace(T, scene, works);
+  const {faces, palette, roomGroups, screenSlots, screenGlows, scriptMounts} = buildSpace(T, scene, works);
+  // ---------- live scripts: compile when you come near, run only in the room you're in ----------
+  function scriptsNear(index) {
+    for (const mount of scriptMounts) {
+      if (mount.live || !near(mount.room, index, 1)) continue;
+      mount.live = 'loading';
+      liveStation(mount.screen).then(live => {
+        mount.live = live;
+        for (const [material, canvas] of [[mount.art, live.art], [mount.code, live.code]]) {
+          const texture = new T.CanvasTexture(canvas);
+          texture.colorSpace = T.SRGBColorSpace;
+          texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+          material.map = texture; material.color.setHex(0xffffff); material.needsUpdate = true;
+        }
+        track('print-room-script', {script: mount.screen.id}, mount.screen.id);
+        invalidate();
+      }).catch(error => { console.warn(mount.screen.id, error); mount.live = 'failed'; });
+    }
+  }
+  const facing = new T.Vector3(), toward = new T.Vector3();
+  // step the scripts in this room; repaint the textures of those you can see. True while any run.
+  function stepScripts(seconds) {
+    let running = false;
+    camera.getWorldDirection(facing);
+    for (const mount of scriptMounts) {
+      if (mount.room !== currentRoom || typeof mount.live !== 'object') continue;
+      mount.live.step(seconds);
+      running = true;
+      mount.center.getWorldPosition(toward).sub(camera.position);
+      if (toward.length() > 16 || toward.normalize().dot(facing) < .2) continue;
+      mount.art.map.needsUpdate = true; mount.code.map.needsUpdate = true;
+    }
+    return running;
+  }
   // ---------- video: one <video> per clip, loaded and playing only within a room of you ----------
   const channels = new Map();
   for (const slot of screenSlots) {
@@ -1232,6 +1624,7 @@ function walkable(T) {
   function nearRoom(index) {
     roomGroups.forEach((group, i) => { group.visible = near(i, index, 2); });
     screensNear(index);
+    scriptsNear(index);
     for (const face of faces) {
       const room = face.userData.work.room;
       if (near(room, index, 1)) loadPreview(face).catch(() => {});
@@ -1564,7 +1957,8 @@ function walkable(T) {
       for (const channel of channels.values()) if (channel.started) sample(channel);
       updateScreens();
     }
-    if (glide || walking() || light !== lit || paper || zooming || screensLive) invalidate();
+    const scriptsLive = stepScripts(wall);
+    if (glide || walking() || light !== lit || paper || zooming || screensLive || scriptsLive) invalidate();
     else last = 0;
   }
   function tint() {
@@ -1830,9 +2224,12 @@ function wholeCatalogue() {
     }
     list.append(block);
   }
-  const video = rooms.filter(room => room.screens).map(room => room.number);
+  const live = rooms.filter(isScriptRoom).map(room => room.number);
+  const video = rooms.filter(isVideoRoom).map(room => room.number);
   const colophon = tag('p', 'cat-colophon', 'The order is the hang: each work sits beside the ones it most resembles.');
-  if (video.length) colophon.textContent += ` Rooms ${video.join(' and ')} hold video and are not in print.`;
+  if (live.length) colophon.textContent += ` Rooms ${roomRange(live)} run the bot's original scripts on fresh seeds.`;
+  if (video.length) colophon.textContent += ` Rooms ${roomRange(video)} hold video.`;
+  if (live.length || video.length) colophon.textContent += ' None of these are in print.';
   index.append(list, colophon);
   catalogue.append(index);
 }

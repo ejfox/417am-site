@@ -60,6 +60,8 @@ button:disabled{cursor:default;color:var(--mid)}
 .end-tour,.tour-hold{color:var(--mid)}
 .auto-tour.resting{color:var(--mid);pointer-events:none}
 .flat-video{width:100%;background:#000}
+.flat-live{grid-column:1/-1;display:grid;grid-template-columns:1fr .7fr;gap:12px;align-items:start}
+.canvas-mount .flat-live canvas{position:static;inset:auto;width:100%;height:auto;display:block;cursor:default}
 .tour-hold{font-variant-numeric:tabular-nums;min-width:3ch}
 
 dialog{position:fixed;inset:0;margin:auto;background:var(--bg);color:var(--fg);border:1px solid var(--fg);padding:0;max-width:calc(100% - 24px);max-height:calc(100% - 24px)}
