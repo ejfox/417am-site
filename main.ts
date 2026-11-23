@@ -738,7 +738,7 @@ function layout(meta: Meta, body: string): string {
 </html>`;
 }
 
-const HEAD_NAV = `<nav><a href="/#works">Works</a><a href="/#archive">Archive</a><a href="/information">Information</a></nav>`;
+const HEAD_NAV = `<nav><a href="/#works">Works</a><a href="/#archive">Archive</a><a href="/print-room/">Print room</a><a href="/information">Information</a></nav>`;
 function siteHead(right = HEAD_NAV): string {
   return `<header class="head"><h1><a href="/">417am</a></h1>${right}</header>`;
 }
