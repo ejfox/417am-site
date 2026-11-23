@@ -19,6 +19,9 @@
   </script>
   <title>Print room · 417am</title>
   <link rel="preconnect" href="https://res.cloudinary.com" crossorigin>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.min.js" crossorigin>
+  <link rel="preload" href="gallery.json" as="fetch" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/ejfox/academic.css@1.0.0/academic.css">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -33,7 +36,6 @@
       <p id="intro-text" class="mid"></p>
       <nav aria-label="Rooms" class="room-list" id="rooms"></nav>
       <canvas id="map" width="286" height="250" role="img" aria-label="Floor plan"></canvas>
-      <button type="button" id="checklist" class="checklist">Checklist</button>
     </aside>
     <section class="gallery" aria-label="Gallery">
       <div class="viewport" id="viewport">
@@ -69,7 +71,6 @@
       <div class="print-tools"><button type="button" id="zoom-out" aria-label="Zoom out">−</button><button type="button" id="zoom-reset" aria-label="Reset zoom">Fit</button><button type="button" id="zoom-in" aria-label="Zoom in">+</button><a id="original">Page</a></div>
     </footer>
   </dialog>
-  <dialog id="index" class="index" aria-labelledby="index-title"><header class="dialog-bar"><h2 id="index-title">Checklist</h2><button type="button" class="close" data-close aria-label="Close">×</button></header><div id="index-list"></div></dialog>
   <div id="catalogue" class="catalogue" aria-hidden="true"></div>
   <div id="preparing" class="preparing" role="status" hidden></div>
   <noscript><a href="/">417am</a></noscript>

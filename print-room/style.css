@@ -28,7 +28,6 @@ button:disabled{cursor:default;color:var(--mid)}
 .room[aria-current] .room-seen{color:var(--bg)}
 .room.complete .room-number::after{content:' ●'}
 #map{display:block;width:100%;height:auto;cursor:pointer;flex:none}
-.checklist{text-align:left;margin-top:auto;align-self:flex-start}
 
 .gallery{display:flex;flex-direction:column;min-width:0;min-height:0}
 .viewport{position:relative;flex:1;min-height:320px;overflow:hidden;background:#f2f2f2;isolation:isolate}
@@ -85,13 +84,6 @@ dialog::backdrop{background:#ffffffe6}
 button.near:hover:not(:disabled){background:none;color:var(--fg)}
 .near.seen span::before{content:'● '}
 .near span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-.index{width:min(520px,100% - 24px);overflow:auto}
-.index .dialog-bar{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--rule)}
-.index h3{color:var(--mid);padding:14px 14px 4px}
-.index-piece{display:flex;justify-content:space-between;width:100%;text-align:left;padding:4px 14px;border-bottom:1px solid var(--rule)}
-.index-piece small{color:var(--mid);font-size:13px}
-@media (hover:hover){.index-piece:hover small{color:var(--bg)}}
-.index-piece.seen::after{content:'●';order:-1;margin-right:-8px}
 
 /* 4:17: the room goes dark */
 /* after hours: OLED black, off-white ink, hairlines barely there; the art is the only bright thing */
@@ -127,8 +119,6 @@ body,.topbar,.rail,.controls,.room,.room-list,dialog{transition:background-color
   .gallery{grid-row:2;grid-column:1}
   .viewport{min-height:0}
   .room-list{grid-column:1}
-  /* checklist sits in the action row, left; Next and Tour on the right */
-  .checklist{grid-row:2;grid-column:1;align-self:end;justify-self:start;z-index:2;height:44px;margin:0 0 env(safe-area-inset-bottom) max(12px,env(safe-area-inset-left));padding:0}
   .controls{height:calc(44px + env(safe-area-inset-bottom));padding:0 max(12px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px,env(safe-area-inset-left));justify-content:flex-end}
   .gallery-actions{gap:20px}
   .gallery-actions button{height:44px}
@@ -144,8 +134,6 @@ body,.topbar,.rail,.controls,.room,.room-list,dialog{transition:background-color
   .inspect .print-stage{flex:1;height:auto;min-height:0}
   .dialog-bar{padding-top:calc(10px + env(safe-area-inset-top))}
   .print-footer{padding-bottom:calc(10px + env(safe-area-inset-bottom));flex-wrap:wrap}
-  .index{width:100%;max-width:100%;height:100%;max-height:100%;margin:0;border:0}
-  .index .dialog-bar{padding-top:calc(10px + env(safe-area-inset-top))}
 }
 /* landscape phones: no room strip, the room gets the whole height */
 @media (max-height:500px) and (pointer:coarse){

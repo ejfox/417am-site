@@ -224,36 +224,60 @@ async function compileScript(name, source) {
   };
 }
 // a station: the picture and its code, two canvases, advanced by step(dt)
-const ART_PX = 1024, CODE_W = 900, CODE_H = 1260, CODE_LINE = 23, CODE_TOP = 54, CODE_BOTTOM = 64;
-const RUN_SECONDS = 45, HOLD_SECONDS = 9, SETUP_SECONDS = 3;
+// the code panel is laid out at 900 x 1260 and drawn at CODE_SCALE, sharp enough to fill a wall
+const ART_PX = 1080, CODE_W = 900, CODE_H = 1260, CODE_SCALE = 1.5, CODE_LINE = 23, CODE_TOP = 54, CODE_BOTTOM = 64;
+// slow on purpose: a run takes minutes, so you can stand there and read the lines light up
+const RUN_SECONDS = 360, MIN_RUN_SECONDS = 90, HOLD_SECONDS = 30, SETUP_SECONDS = 20, FADE = .95;
+// the playhead's reading pace, in statements a second
+const PLAYHEAD_LINES = 12;
+// a trace the playhead can walk: each line at most twice (a loop shows two passes, then moves
+// on), and no line twice in a row
+function playable(trace) {
+  const seen = new Map(), out = [];
+  for (const line of trace) {
+    const count = (seen.get(line) ?? 0) + 1;
+    seen.set(line, count);
+    if (count > 2 || line === out[out.length - 1]) continue;
+    out.push(line);
+  }
+  return out;
+}
+// a station's centre height: wall-sized ones rise to fill the wall
+function stationHeight(screen) {
+  return Math.max(1.58, .55 + screen.dh / 2);
+}
 function station(name, source, make, made) {
   const lines = source.split('\n');
   const art = document.createElement('canvas'); art.width = art.height = ART_PX;
-  const code = document.createElement('canvas'); code.width = CODE_W; code.height = CODE_H;
+  const code = document.createElement('canvas'); code.width = CODE_W * CODE_SCALE; code.height = CODE_H * CODE_SCALE;
   const artContext = art.getContext('2d'), codeContext = code.getContext('2d');
+  // heat: everything that ran lately, a faint wash. The playhead: one line at a time, walking
+  // through the latest tick's statements at reading pace, with a short trail behind it.
   const heat = new Float32Array(lines.length + 2);
-  let piece = null, phase = 'setup', clock = 0, setupTrace = [], ticksDone = 0, ticksTotal = 0, runFor = RUN_SECONDS;
-  let scroll = 0, dark = false, failed = 0, tracing = 'setup';
+  let piece = null, phase = 'setup', clock = 0, ticksDone = 0, ticksTotal = 0, runFor = RUN_SECONDS;
+  let scroll = 0, dark = false, failed = 0;
+  let recording = [], lastTick = [], replay = [], replayAt = 0, playhead = 0, trail = [];
   const trace = line => {
     heat[line] = 1;
-    if (tracing === 'setup' && setupTrace.length < 4000) setupTrace.push(line);
+    if (recording.length < 8000) recording.push(line);
   };
   function begin() {
     const seed = Date.now() + Math.floor(Math.random() * 1000);
-    heat.fill(0); setupTrace = []; tracing = 'setup'; ticksDone = 0; clock = 0; phase = 'setup';
+    heat.fill(0); recording = []; lastTick = []; ticksDone = 0; clock = 0; phase = 'setup';
     try {
       piece = make(seed, trace);
       piece.prepare();
+      replay = playable(recording); replayAt = 0;
       piece.ticks = 0;
       ticksTotal = piece.numTicks + 1;  // the skeleton's tickTil runs 0..numTicks inclusive
-      // a script of a few ticks still takes a few seconds; a long one, at most RUN_SECONDS
-      runFor = Math.min(RUN_SECONDS, Math.max(5, ticksTotal * 1.2));
+      // a short draw still takes a minute and a half; a long one, at most RUN_SECONDS
+      runFor = Math.min(RUN_SECONDS, Math.max(MIN_RUN_SECONDS, ticksTotal * 1.5));
       failed = 0;
     } catch (error) {
       console.warn(name, error);
       failed += 1; piece = null; phase = 'hold';
     }
-    heat.fill(0); tracing = 'run';
+    heat.fill(0); recording = [];
     artContext.fillStyle = '#000'; artContext.fillRect(0, 0, ART_PX, ART_PX);
     if (piece) artContext.drawImage(piece.canvas, 0, 0, ART_PX, ART_PX);
   }
@@ -261,6 +285,7 @@ function station(name, source, make, made) {
     let paper = '#f4f4f2', ink = '#111111', mid = '#9a9a9a';
     if (dark) { paper = '#070707'; ink = '#d6d6d6'; mid = '#5a5a5a'; }
     const c = codeContext;
+    c.setTransform(CODE_SCALE, 0, 0, CODE_SCALE, 0, 0);
     c.fillStyle = paper; c.fillRect(0, 0, CODE_W, CODE_H);
     c.font = '500 15px "Helvetica Neue", Helvetica, Arial, sans-serif'; c.textBaseline = 'alphabetic';
     c.fillStyle = ink; c.textAlign = 'left'; c.fillText(`${name}.coffee`, 28, 34);
@@ -272,13 +297,11 @@ function station(name, source, make, made) {
     c.fillText(status, CODE_W - 28, 34);
     c.textAlign = 'left';
     c.fillRect(28, 44, CODE_W - 56, 1);
-    // follow the light: centre on where the heat is
-    let weight = 0, sum = 0;
-    for (let i = 1; i < heat.length; i++) { weight += heat[i]; sum += heat[i] * i; }
+    // follow the playhead
     const visible = Math.floor((CODE_H - CODE_TOP - CODE_BOTTOM) / CODE_LINE);
-    if (weight > .05) {
-      const target = Math.max(0, Math.min(lines.length - visible, sum / weight - visible / 2));
-      scroll += (target - scroll) * .12;
+    if (playhead) {
+      const target = Math.max(0, Math.min(lines.length - visible, playhead - 1 - visible / 2));
+      scroll += (target - scroll) * .08;
     }
     const first = Math.max(0, Math.floor(scroll));
     c.font = '15px "SF Mono", Menlo, Consolas, monospace';
@@ -287,18 +310,23 @@ function station(name, source, make, made) {
       if (index >= lines.length) break;
       const y = CODE_TOP + (index - scroll) * CODE_LINE;
       if (y < CODE_TOP - CODE_LINE || y > CODE_H - CODE_BOTTOM) continue;
-      const h = heat[index + 1];
-      if (h > .015) {
-        c.globalAlpha = Math.min(1, h);
+      const line = index + 1, here = line === playhead;
+      // what ran lately: a faint wash. The trail: a little darker. The playhead: solid, inverted.
+      let shade = Math.min(1, heat[line]) * .1;
+      const behind = trail.indexOf(line);
+      if (behind >= 0) shade = Math.max(shade, .14 + .14 * behind / trail.length);
+      if (here) shade = 1;
+      if (shade > .01) {
+        c.globalAlpha = shade;
         c.fillStyle = ink; c.fillRect(24, y + 4, CODE_W - 48, CODE_LINE);
         c.globalAlpha = 1;
       }
       c.fillStyle = mid;
-      if (h > .5) c.fillStyle = paper;
-      c.textAlign = 'right'; c.fillText(String(index + 1), 66, y + CODE_LINE - 2);
+      if (here) c.fillStyle = paper;
+      c.textAlign = 'right'; c.fillText(String(line), 66, y + CODE_LINE - 2);
       c.textAlign = 'left';
       c.fillStyle = ink;
-      if (h > .5) c.fillStyle = paper;
+      if (here) c.fillStyle = paper;
       c.fillText(lines[index].slice(0, 86), 82, y + CODE_LINE - 2);
     }
     c.fillStyle = mid; c.fillRect(28, CODE_H - CODE_BOTTOM + 8, CODE_W - 56, 1);
@@ -309,29 +337,48 @@ function station(name, source, make, made) {
   function step(dt) {
     if (!piece && phase !== 'hold') begin();
     clock += dt;
-    const fade = Math.pow(.88, dt * 60);
+    const fade = Math.pow(FADE, dt * 60);
     for (let i = 0; i < heat.length; i++) heat[i] *= fade;
+    // the playhead walks its replay; at the end it picks up the newest tick
+    replayAt += dt * PLAYHEAD_LINES;
+    if (replayAt >= replay.length) {
+      replayAt = 0; replay = [];
+      if (phase === 'run') replay = playable(lastTick);
+      if (phase === 'setup') { phase = 'run'; clock = 0; }
+    }
+    const now = replay[Math.floor(replayAt)] ?? 0;
+    if (now !== playhead) {
+      if (playhead) trail.push(playhead);
+      if (trail.length > 4) trail.shift();
+      playhead = now;
+    }
+    if (!playhead) trail = [];
     if (phase === 'setup') {
-      // replay what setup touched, quickly, so it reads as a flicker down the file
-      const shown = Math.floor(setupTrace.length * Math.min(1, clock / SETUP_SECONDS));
-      for (let i = Math.max(0, shown - 3); i < shown; i++) heat[setupTrace[i]] = 1;
-      if (clock >= SETUP_SECONDS) { phase = 'run'; clock = 0; }
+      // setup ran in an instant; the playhead shows its path, so the wash follows the playhead
+      if (playhead) heat[playhead] = 1;
+      if (clock >= SETUP_SECONDS) { phase = 'run'; clock = 0; replay = []; }
     } else if (phase === 'run') {
       const due = Math.min(ticksTotal, Math.ceil(ticksTotal * Math.min(1, clock / runFor)));
       const start = performance.now();
-      while (ticksDone < due && performance.now() - start < 12) {
+      // a few ms of ticks a frame at most; `due` catches up over the next frames
+      while (ticksDone < due && performance.now() - start < 6) {
+        recording = [];
         try { piece.tick(); } catch (error) { console.warn(name, error); ticksDone = ticksTotal; break; }
+        lastTick = recording;
         ticksDone += 1;
       }
-      artContext.drawImage(piece.canvas, 0, 0, ART_PX, ART_PX);
       if (ticksDone >= ticksTotal) { phase = 'hold'; clock = 0; }
     } else if (clock >= HOLD_SECONDS && failed < 3) {
       piece = null;
       begin();
     }
+  }
+  // step() runs the script; paint() draws what it looks like now, only when someone will see it
+  function paint() {
+    if (piece) artContext.drawImage(piece.canvas, 0, 0, ART_PX, ART_PX);
     drawCode();
   }
-  return {art, code, step, theme(isDark) { dark = isDark; drawCode(); }};
+  return {art, code, step, paint, theme(isDark) { dark = isDark; drawCode(); }};
 }
 // one station per script, shared by the 3D rooms and the flat fallback
 const liveStations = new Map();
@@ -497,7 +544,7 @@ function buildSpace(T, scene, works) {
     const yaw = Math.atan2(z1 - z2, x2 - x1);
     const x = (x1 + x2) / 2, z = (z1 + z2) / 2;
     const key = width.toFixed(0);
-    if (!walls.has(key)) walls.set(key, immaterial(0xffffff, 0x141414, {map: plaster(width), side: T.DoubleSide}));
+    if (!walls.has(key)) walls.set(key, immaterial(0xffffff, 0x141414, {map: plaster(width)}));
     const group = new T.Group(); group.position.set(x, 0, z); group.rotation.y = yaw; scene.add(group);
     box(width, H, .12, walls.get(key), 0, H / 2, 0, group);
     box(width, .096, .15, recess, 0, .048, 0, group);
@@ -624,6 +671,7 @@ function buildSpace(T, scene, works) {
     let high = 3.45;
     if (!anchor) { anchor = room.screens[0]; width = anchor.dw; }
     if (isVideoRoom(room)) high = 4.2;  // clear of the projection
+    if (isScriptRoom(room)) high = Math.max(high, stationHeight(anchor) + anchor.dh / 2 + .3);  // over the wall-sized station
     const group = new T.Group();
     group.position.set(anchor.x, 0, anchor.z); group.rotation.y = anchor.yaw;
     roomGroups[room.index].add(group);
@@ -678,9 +726,9 @@ function buildSpace(T, scene, works) {
       if (screen.kind === 'script') {
         // a station: the picture, framed like a print, and its code beside it on the wall.
         // blank paper until the script compiles; app code hands both canvases over then
-        const center = new T.Group(); center.position.set(screen.x, 1.58, screen.z); center.rotation.y = screen.yaw;
+        const center = new T.Group(); center.position.set(screen.x, stationHeight(screen), screen.z); center.rotation.y = screen.yaw;
         roomGroups[room.index].add(center);
-        const side = screen.dh, codeWidth = screen.dw - side - .3;
+        const side = screen.dh, codeWidth = side * CODE_W / CODE_H;
         const artX = -screen.dw / 2 + side / 2, codeX = screen.dw / 2 - codeWidth / 2;
         const pool = surface(screen.dw + 1.2, side + 1.6, wash, 0, .35, -.0125, 0, center);
         pool.renderOrder = -1;
@@ -752,7 +800,60 @@ function buildSpace(T, scene, works) {
     screen.userData.work = work; faces.push(screen);
     surface(.63, .158, lettering([`no. ${work.id}`, String(work.year)], false, 512, 128), work.width / 2 - .26, -height / 2 - .145, 0, 0, center);
   }
+  mergeStatic(T, scene, roomGroups);
   return {faces, palette, roomGroups, screenSlots, screenGlows, scriptMounts};
+}
+
+// Static scenery costs a draw call per mesh: thousands of frames, walls, slabs and benches.
+// Nothing here moves, and everything that changes (tint, screens, pictures) changes a material,
+// so meshes sharing a material in the same room (or the building itself) become one mesh.
+// Faces (userData.work) and one-of-a-kind materials (labels, tubes, glows, panels) stay as they are.
+function mergeStatic(T, scene, roomGroups) {
+  scene.updateMatrixWorld(true);
+  const containers = new Set([scene, ...roomGroups]);
+  const buckets = new Map();
+  scene.traverse(mesh => {
+    if (!mesh.isMesh || mesh.isInstancedMesh || Object.keys(mesh.userData).length) return;
+    let container = mesh.parent;
+    while (container && !containers.has(container)) container = container.parent;
+    if (!container) return;
+    const key = `${container.id}:${mesh.material.id}:${mesh.renderOrder}`;
+    if (!buckets.has(key)) buckets.set(key, {container, material: mesh.material, renderOrder: mesh.renderOrder, meshes: []});
+    buckets.get(key).meshes.push(mesh);
+  });
+  const toLocal = new T.Matrix4(), matrix = new T.Matrix4();
+  for (const {container, material, renderOrder, meshes} of buckets.values()) {
+    if (meshes.length < 2) continue;
+    toLocal.copy(container.matrixWorld).invert();
+    const parts = meshes.map(mesh => mesh.geometry.clone().applyMatrix4(matrix.multiplyMatrices(toLocal, mesh.matrixWorld)));
+    let vertices = 0, indices = 0;
+    for (const part of parts) { vertices += part.attributes.position.count; indices += part.index.count; }
+    const position = new Float32Array(vertices * 3), normal = new Float32Array(vertices * 3), uv = new Float32Array(vertices * 2);
+    const index = new Uint32Array(indices);
+    let v = 0, i = 0;
+    for (const part of parts) {
+      position.set(part.attributes.position.array, v * 3);
+      normal.set(part.attributes.normal.array, v * 3);
+      uv.set(part.attributes.uv.array, v * 2);
+      const source = part.index.array;
+      for (let k = 0; k < source.length; k++) index[i + k] = source[k] + v;
+      v += part.attributes.position.count; i += source.length;
+      part.dispose();
+    }
+    const geometry = new T.BufferGeometry();
+    geometry.setAttribute('position', new T.BufferAttribute(position, 3));
+    geometry.setAttribute('normal', new T.BufferAttribute(normal, 3));
+    geometry.setAttribute('uv', new T.BufferAttribute(uv, 2));
+    geometry.setIndex(new T.BufferAttribute(index, 1));
+    const merged = new T.Mesh(geometry, material);
+    merged.renderOrder = renderOrder;
+    container.add(merged);
+    for (const mesh of meshes) { mesh.removeFromParent(); mesh.geometry.dispose(); }
+  }
+  // the groups that only held merged pieces are empty now: drop them
+  const empty = [];
+  scene.traverse(node => { if (node.isGroup && !containers.has(node) && !node.children.length) empty.push(node); });
+  for (const node of empty) node.removeFromParent();
 }
 
 // ---------- tour ----------
@@ -788,7 +889,7 @@ function entryView(room) {
   // a script room turns you to its first station: it may hang on a side wall
   if (isScriptRoom(room)) {
     const first = room.screens[0];
-    return viewFrom(ex, ez, [first.x, 1.58, first.z]);
+    return viewFrom(ex, ez, [first.x, stationHeight(first), first.z]);
   }
   return viewFrom(ex, ez, [cx + (cx - ex), 2.1, cz + (cz - ez)]);
 }
@@ -798,7 +899,6 @@ function entryView(room) {
 const $ = (id) => document.getElementById(id);
 const view = $('viewport');
 const printDialog = $('inspect');
-const indexDialog = $('index');
 const stage = $('print-stage');
 const print = $('print');
 const clock = new Intl.DateTimeFormat('en-GB', {hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'America/New_York'});
@@ -871,7 +971,8 @@ $('night').addEventListener('click', () => {
   updateNight();
 });
 prefersDark.addEventListener('change', updateNight);
-setInterval(updateNight, 1000);
+// the clock can cross 4:17 while you're here; check each second, repaint only when it does
+setInterval(() => { if ((nightOverride ?? autoNight()) !== night) updateNight(); }, 1000);
 
 const mapCanvas = $('map');
 const plan = (() => {
@@ -974,7 +1075,6 @@ const seen = new Set();
 try {
   for (const id of JSON.parse(localStorage.getItem(SEEN_KEY) ?? '[]')) if (byId.has(id)) seen.add(id);
 } catch { /* private window or blocked storage: start fresh */ }
-const checklistButtons = new Map();
 let seenFlash;
 
 function seenIn(room) {
@@ -995,7 +1095,6 @@ function markSeen(work) {
   if (seen.has(work.id)) return;
   seen.add(work.id);
   try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seen])); } catch { /* keep the tally in memory */ }
-  checklistButtons.get(work.id)?.classList.add('seen');
   paintSeen(work.room);
   const room = rooms[work.room];
   const hud = $('seen');
@@ -1166,7 +1265,6 @@ document.addEventListener('visibilitychange', () => {
 
 function showPrint(work, restoreFocus) {
   stopTour();
-  if (indexDialog.open) indexDialog.close();
   if (!printDialog.open) lastFocus = restoreFocus ?? document.activeElement;
   keys.clear();
   const room = rooms[work.room];
@@ -1279,26 +1377,10 @@ printDialog.addEventListener('close', () => {
   history.replaceState(null, '', location.pathname + location.search);
   lastFocus?.focus();
 });
-indexDialog.addEventListener('close', () => { if (!printDialog.open) $('checklist').focus(); });
-$('checklist').addEventListener('click', () => { stopTour(); keys.clear(); indexDialog.showModal(); });
-for (const room of rooms.filter(room => room.works.length)) {
-  const section = document.createElement('section');
-  const heading = document.createElement('h3'); heading.textContent = room.number; section.append(heading);
-  for (const id of room.works) {
-    const work = byId.get(id);
-    const button = document.createElement('button'); button.type = 'button'; button.className = 'index-piece'; button.textContent = work.title;
-    const medium = document.createElement('small'); medium.textContent = `${work.year} · ${work.medium}`; button.append(medium);
-    button.classList.toggle('seen', seen.has(work.id));
-    checklistButtons.set(work.id, button);
-    button.addEventListener('click', () => { visitWork(work); showPrint(work, $('checklist')); });
-    section.append(button);
-  }
-  $('index-list').append(section);
-}
 
 const moveKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyQ', 'KeyE']);
 window.addEventListener('keydown', event => {
-  if (printDialog.open || indexDialog.open || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (printDialog.open || event.metaKey || event.ctrlKey || event.altKey) return;
   if (event.code === 'Escape' && tour) { event.preventDefault(); finishTour(); return; }
   // on tour, the arrows step through the pieces
   if (tour && (event.code === 'ArrowRight' || event.code === 'ArrowLeft') && (event.target === document.body || event.target.tagName === 'CANVAS')) {
@@ -1343,7 +1425,7 @@ function fallback() {
     let seconds = 0;
     if (flatLast) seconds = Math.min(.1, (now - flatLast) / 1000);
     flatLast = now;
-    for (const entry of live) entry.step(seconds);
+    for (const entry of live) { entry.step(seconds); entry.paint(); }
     flatFrame = requestAnimationFrame(runFlat);
   }
   function go(index, workAtStop, touring = false) {
@@ -1400,7 +1482,13 @@ function fallback() {
 // ---------- walkable 3D ----------
 
 function walkable(T) {
-  const renderer = new T.WebGLRenderer({antialias: true, powerPreference: 'high-performance'});
+  // basic materials, no lights: the integrated GPU is plenty, and kinder to a laptop battery
+  const renderer = new T.WebGLRenderer({antialias: true});
+  // ?stats: draw calls and GPU memory for the last frame, for performance checks
+  if (new URLSearchParams(location.search).has('stats')) {
+    window.printRoomStats = () => ({calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
+      textures: renderer.info.memory.textures, geometries: renderer.info.memory.geometries});
+  }
   renderer.outputColorSpace = T.SRGBColorSpace; renderer.toneMapping = T.NoToneMapping;
   renderer.domElement.tabIndex = 0; renderer.domElement.setAttribute('aria-label', '3D gallery. Use WASD to move, Q and E to turn, or drag to look.');
   const canvas = renderer.domElement; $('mount').append(canvas);
@@ -1409,7 +1497,8 @@ function walkable(T) {
   const dayAir = new T.Color(0xdcdcdc), nightAir = new T.Color(0x000000);
   const markerDay = new T.Color(0x111111), markerNight = new T.Color(0xf2f2f2);
   scene.fog = new T.Fog(scene.background, 24, 64);
-  const camera = new T.PerspectiveCamera(58, 1, .07, 90); camera.rotation.order = 'YXZ';
+  // nothing past the fog's end (64 m) shows but fog colour, so nothing past it is drawn
+  const camera = new T.PerspectiveCamera(58, 1, .07, 64); camera.rotation.order = 'YXZ';
   const {faces, palette, roomGroups, screenSlots, screenGlows, scriptMounts} = buildSpace(T, scene, works);
   // ---------- live scripts: compile when you come near, run only in the room you're in ----------
   function scriptsNear(index) {
@@ -1421,7 +1510,7 @@ function walkable(T) {
         for (const [material, canvas] of [[mount.art, live.art], [mount.code, live.code]]) {
           const texture = new T.CanvasTexture(canvas);
           texture.colorSpace = T.SRGBColorSpace;
-          texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+          texture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());  // seen near head-on
           material.map = texture; material.color.setHex(0xffffff); material.needsUpdate = true;
         }
         track('print-room-script', {script: mount.screen.id}, mount.screen.id);
@@ -1439,7 +1528,12 @@ function walkable(T) {
       mount.live.step(seconds);
       running = true;
       mount.center.getWorldPosition(toward).sub(camera.position);
-      if (toward.length() > 16 || toward.normalize().dot(facing) < .2) continue;
+      // big textures: upload at most ~20 times a second, and only when you're facing them
+      mount.since = (mount.since ?? 0) + seconds;
+      if (mount.since < .05) continue;
+      if (toward.length() > 20 || toward.normalize().dot(facing) < .1) continue;
+      mount.since = 0;
+      mount.live.paint();
       mount.art.map.needsUpdate = true; mount.code.map.needsUpdate = true;
     }
     return running;
@@ -1607,7 +1701,7 @@ function walkable(T) {
     const data = face.userData;
     if (data.preview || data.loading) return data.loading ?? Promise.resolve();
     const work = data.work;
-    data.loading = loader.loadAsync(work.texture(PREVIEW)).catch(() => loader.loadAsync(work.original)).then(texture => {
+    data.loading = loader.loadAsync(work.texture(PREVIEW)).catch(() => loader.loadAsync(work.image)).then(texture => {
       if (!near(work.room, currentRoom, 2)) { texture.dispose(); return; }
       data.preview = configure(texture, work);
       if (data.sharp) return;
@@ -1895,20 +1989,24 @@ function walkable(T) {
     } else if (performance.now() - dwell.since >= 700) markSeen(candidate.userData.work);
     if (candidate && (Math.max(candidate.userData.work.w, candidate.userData.work.hw || 0) <= PREVIEW || candidate.userData.sharpFailed)) candidate = undefined;
     if (!candidate) return;
-    // already sharp: keep it, and mark it most recently looked at
-    if (candidate.userData.sharp) {
+    const work = candidate.userData.work;
+    // 2048 is already native resolution at viewing distance; 4096 only earns its ~90 MB zoomed in
+    let limit = 2048;
+    if (!coarse && reach > 1.5) limit = 4096;
+    limit = Math.min(renderer.capabilities.maxTextureSize, limit, Math.max(work.w, work.hw || 0));
+    // already sharp enough: keep it, and mark it most recently looked at
+    if (candidate.userData.sharp && candidate.userData.sharpLimit >= limit) {
       sharpFaces.splice(sharpFaces.indexOf(candidate), 1); sharpFaces.push(candidate);
       return;
     }
     if (sharpRequest) return;
     sharpRequest = candidate;
-    const work = candidate.userData.work;
-    let limit = 4096;
-    if (coarse) limit = 2048;
-    limit = Math.min(renderer.capabilities.maxTextureSize, limit);
     loader.loadAsync(work.texture(limit)).then(texture => {
       if (!near(work.room, currentRoom, 1) || !candidate.userData.preview) { texture.dispose(); return; }
-      candidate.userData.sharp = configure(texture, work); assign(candidate, texture);
+      // zoomed in on a print that was 2048: the bigger copy replaces it
+      if (candidate.userData.sharp) dropSharp(candidate);
+      candidate.userData.sharp = configure(texture, work); candidate.userData.sharpLimit = limit;
+      assign(candidate, texture);
       sharpFaces.push(candidate);
       // keep the last few prints you looked at sharp, so looking back (or zooming again) is instant
       while (sharpFaces.length > SHARP_KEEP) dropSharp(sharpFaces[0]);
@@ -2109,11 +2207,15 @@ try {
   console.warn('3D renderer unavailable', error);
   sceneView = fallback();
 }
-if (linked) showPrint(linked, $('checklist'));
+// where focus goes back to when a deep-linked print closes: the 3D view (focusable), else nowhere
+function galleryFocus() {
+  return document.querySelector('.canvas-mount canvas') ?? undefined;
+}
+if (linked) showPrint(linked, galleryFocus());
 
 window.addEventListener('hashchange', () => {
   const work = byId.get(location.hash.slice(1));
-  if (work) { visit(work.room); showPrint(work, $('checklist')); return; }
+  if (work) { visit(work.room); showPrint(work, galleryFocus()); return; }
   const index = rooms.findIndex(room => location.hash === `#room-${room.number}`);
   if (index >= 0) visit(index);
 });
