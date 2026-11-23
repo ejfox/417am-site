@@ -1708,3 +1708,188 @@ window.addEventListener('hashchange', () => {
   const index = rooms.findIndex(room => location.hash === `#room-${room.number}`);
   if (index >= 0) visit(index);
 });
+
+// ---------- the catalogue: what comes out when you print ----------
+// With a work open, printing makes one sheet for it; otherwise every room, in hanging order.
+// Built only when someone prints, so nobody else downloads it.
+const catalogue = $('catalogue');
+const preparing = $('preparing');
+let catalogueFor = '';
+
+function tag(name, className, text) {
+  const node = document.createElement(name);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+function yearsOf(list) {
+  const years = list.map(work => work.year);
+  const first = Math.min(...years), last = Math.max(...years);
+  if (first === last) return String(first);
+  return `${first}–${last}`;
+}
+function plateImage(work, limit) {
+  const image = new Image();
+  image.alt = work.title; image.loading = 'eager'; image.decoding = 'async';
+  if (work.dither) image.classList.add('dither');
+  // a size nobody has asked for yet is made on first request; with hundreds at once a few
+  // fail. Try again, spaced out, and say when it's settled either way.
+  image.ready = new Promise(resolve => {
+    let tries = 0;
+    image.addEventListener('load', resolve);
+    image.addEventListener('error', () => {
+      tries += 1;
+      if (tries > 3) { resolve(); return; }
+      setTimeout(() => { image.src = `${work.texture(limit)}#retry${tries}`; }, 1500 * tries);
+    });
+  });
+  image.src = work.texture(limit);
+  return image;
+}
+function plate(work) {
+  const figure = tag('figure', 'plate');
+  const frame = tag('div', 'plate-frame');
+  // dithered work keeps its dots: more pixels, drawn hard
+  let limit = 900;
+  if (work.dither) limit = 1600;
+  frame.append(plateImage(work, limit));
+  const caption = tag('figcaption');
+  caption.append(tag('b', '', work.title), tag('span', '', String(work.year)), tag('span', 'cat-mid', work.medium));
+  figure.append(frame, caption);
+  return figure;
+}
+// the floor plan, drawn as hairlines
+function planDrawing() {
+  const xs = rooms.flatMap(room => [room.rect[0], room.rect[2]]);
+  const zs = rooms.flatMap(room => [room.rect[1], room.rect[3]]);
+  const x0 = Math.min(...xs), z0 = Math.min(...zs);
+  const width = Math.max(...xs) - x0, depth = Math.max(...zs) - z0;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `-1 -1 ${width + 2} ${depth + 2}`);
+  svg.setAttribute('class', 'cat-plan');
+  for (const room of rooms) {
+    const [x1, z1, x2, z2] = room.rect;
+    const rect = document.createElementNS(svg.namespaceURI, 'rect');
+    rect.setAttribute('x', x1 - x0); rect.setAttribute('y', z1 - z0);
+    rect.setAttribute('width', x2 - x1); rect.setAttribute('height', z2 - z1);
+    const label = document.createElementNS(svg.namespaceURI, 'text');
+    label.setAttribute('x', x1 - x0 + 1); label.setAttribute('y', z1 - z0 + 3);
+    label.textContent = room.number;
+    svg.append(rect, label);
+  }
+  return svg;
+}
+function wholeCatalogue() {
+  const hung = rooms.filter(room => room.works.length);
+  const cover = tag('section', 'cat-cover');
+  const title = tag('div', 'cat-title');
+  title.append(tag('h1', '', 'Print Room'), tag('p', 'cat-lede', `${works.length} works, ${yearsOf(works)}, hung by likeness in ${hung.length} rooms.`));
+  const meta = tag('p', 'cat-meta');
+  const printed = new Intl.DateTimeFormat('en-US', {day: 'numeric', month: 'long', year: 'numeric'}).format(new Date());
+  meta.append(tag('span', '', '417am.party/print-room'), tag('span', '', printed));
+  cover.append(tag('p', 'cat-mark', '417am'), title, planDrawing(), meta);
+  catalogue.append(cover);
+
+  for (const room of hung) {
+    const pieces = room.works.map(id => byId.get(id));
+    const section = tag('section', 'cat-room');
+    const head = tag('header', 'cat-room-head');
+    head.append(tag('span', 'cat-num', room.number), tag('span', '', `${plural(pieces.length, 'work')}, ${yearsOf(pieces)}`));
+    const plates = tag('div', 'cat-plates');
+    for (const work of pieces) plates.append(plate(work));
+    section.append(head, plates);
+    catalogue.append(section);
+  }
+
+  const index = tag('section', 'cat-index');
+  index.append(tag('h2', '', 'Checklist'));
+  const list = tag('div', 'cat-list');
+  for (const room of hung) {
+    const block = tag('div', 'cat-list-room');
+    block.append(tag('h3', '', room.number));
+    for (const id of room.works) {
+      const work = byId.get(id);
+      const row = tag('p');
+      row.append(tag('b', '', work.title), tag('span', '', String(work.year)), tag('span', 'cat-mid', work.medium));
+      block.append(row);
+    }
+    list.append(block);
+  }
+  const video = rooms.filter(room => room.screens).map(room => room.number);
+  const colophon = tag('p', 'cat-colophon', 'The order is the hang: each work sits beside the ones it most resembles.');
+  if (video.length) colophon.textContent += ` Rooms ${video.join(' and ')} hold video and are not in print.`;
+  index.append(list, colophon);
+  catalogue.append(index);
+}
+function singleSheet(work) {
+  const room = rooms[work.room];
+  const sheet = tag('section', 'cat-single');
+  const frame = tag('div', 'plate-frame');
+  let limit = 2400;
+  if (work.dither) limit = 3000;
+  frame.append(plateImage(work, limit));
+  const caption = tag('div', 'cat-single-caption');
+  const left = tag('div');
+  left.append(tag('h1', '', `${work.title}, ${work.year}`), tag('p', '', work.medium),
+    tag('p', 'cat-mid', `${work.dimensions.map(v => v.toLocaleString('en-US')).join(' × ')} px`));
+  const right = tag('div', 'cat-where');
+  right.append(tag('p', '', `Room ${room.number}`), tag('p', 'cat-mid', work.url.replace(/^https?:\/\//, '')));
+  caption.append(left, right);
+  const near = tag('div', 'cat-near');
+  for (const id of work.near ?? []) {
+    const other = byId.get(id);
+    if (!other) continue;
+    const figure = tag('figure');
+    const box = tag('div', 'cat-near-frame');
+    box.append(plateImage(other, 400));
+    figure.append(box, tag('figcaption', '', other.title));
+    near.append(figure);
+  }
+  const alike = tag('div', 'cat-alike');
+  alike.append(tag('h2', '', 'Most alike'), near);
+  const meta = tag('p', 'cat-meta');
+  meta.append(tag('span', '', '417am · Print Room'), tag('span', '', '417am.party/print-room'));
+  sheet.append(frame, caption, alike, meta);
+  catalogue.append(sheet);
+}
+// the work on screen, if any: the inspect dialog's
+function openWork() {
+  if (!printDialog.open) return null;
+  return byId.get(location.hash.slice(1)) ?? null;
+}
+function setCatalogue() {
+  const work = openWork();
+  let key = 'all';
+  if (work) key = work.id;
+  if (catalogueFor !== key) {
+    catalogueFor = key;
+    catalogue.replaceChildren();
+    if (work) singleSheet(work);
+    else wholeCatalogue();
+  }
+  return [...catalogue.querySelectorAll('img')];
+}
+// ⌘P / Ctrl+P: set the catalogue, wait for its pictures, then print
+let settingCatalogue = false;
+function printCatalogue() {
+  if (settingCatalogue) return;  // a second ⌘P while the pictures load: one print is enough
+  settingCatalogue = true;
+  const images = setCatalogue();
+  let done = 0;
+  const say = () => { preparing.textContent = `Setting the catalogue · ${done}/${images.length}`; };
+  preparing.hidden = false; say();
+  const ready = images.map(image => image.ready.then(() => { done += 1; say(); }));
+  const patience = new Promise(resolve => setTimeout(resolve, 45000));
+  Promise.race([Promise.all(ready), patience]).then(() => {
+    preparing.hidden = true;
+    settingCatalogue = false;
+    print();
+  });
+}
+addEventListener('keydown', event => {
+  if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'p') return;
+  event.preventDefault(); event.stopPropagation();
+  printCatalogue();
+}, true);
+// the browser's own Print menu: set it now; pictures fill in as they arrive
+addEventListener('beforeprint', setCatalogue);

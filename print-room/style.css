@@ -152,3 +152,64 @@ body,.topbar,.rail,.controls,.room,.room-list,dialog{transition:background-color
   .near img{height:44px}
   .likeness{display:none}
 }
+
+/* ---------- the catalogue: only on paper ---------- */
+/* one face, two sizes (text and display); hierarchy from tone, weight and white space */
+.catalogue{display:none}
+.preparing{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:10;background:var(--fg);color:var(--bg);padding:6px 12px;letter-spacing:.04em}
+.preparing[hidden]{display:none}
+@media print{
+  @page{size:letter;margin:.6in .65in .7in}
+  html,body{height:auto!important;overflow:visible!important;background:#fff!important;color:#000!important}
+  body>*:not(.catalogue){display:none!important}
+  .catalogue{display:block;color:#000;font:8pt/1.45 "Helvetica Neue",Helvetica,Arial,sans-serif;letter-spacing:.02em}
+  .catalogue h1,.catalogue h2,.catalogue h3{color:#000;letter-spacing:.02em}
+  .catalogue figure{margin:0}
+  .catalogue img{display:block;max-width:100%;max-height:100%;width:auto;height:auto}
+  .catalogue img.dither{image-rendering:pixelated}
+  .catalogue p,.catalogue figcaption{max-width:none}
+  .cat-mid{color:#767676}
+  .cat-meta{display:flex;justify-content:space-between;border-top:.5pt solid #000;padding-top:5pt;color:#767676;font-size:7pt}
+
+  /* cover: the name low on the page, the plan beneath it */
+  .cat-cover{height:9.65in;display:flex;flex-direction:column;break-after:page}
+  .cat-mark{font-size:8pt}
+  .cat-title{margin-top:auto}
+  .cat-cover h1{font-size:40pt;font-weight:300;line-height:1;letter-spacing:-.01em}
+  .cat-lede{margin-top:9pt;font-size:9pt;max-width:34ch!important}
+  .cat-plan{display:block;width:58%;margin:.55in 0 .45in auto}
+  .cat-plan rect{fill:none;stroke:#000;stroke-width:.12}
+  .cat-plan text{font:1.9px "Helvetica Neue",Helvetica,Arial,sans-serif;fill:#000}
+
+  /* a room: its number, then its works two by two */
+  .cat-room{break-before:page}
+  .cat-room-head{display:flex;align-items:baseline;gap:12pt;padding-bottom:6pt;border-bottom:.5pt solid #000;margin-bottom:.32in}
+  .cat-num{font-size:40pt;font-weight:300;line-height:.9;letter-spacing:-.01em}
+  .cat-plates{display:grid;grid-template-columns:1fr 1fr;column-gap:.5in;row-gap:.38in}
+  .plate{break-inside:avoid}
+  .plate .plate-frame{height:3.2in;display:flex;align-items:flex-end}
+  .plate figcaption{display:flex;gap:9pt;margin-top:6pt}
+  .plate figcaption b,.cat-list b{font-weight:500}
+
+  /* checklist: every work, three columns, then a line on how it was hung */
+  .cat-index{break-before:page}
+  .cat-index h2{font-size:8pt;font-weight:500;text-transform:uppercase;letter-spacing:.08em;margin-bottom:14pt}
+  .cat-list{columns:3;column-gap:.3in;font-size:6.5pt;line-height:1.55}
+  .cat-list-room{margin-bottom:8pt}
+  .cat-list-room h3{font-size:6.5pt;font-weight:500;border-bottom:.5pt solid #000;margin-bottom:2pt;break-after:avoid}
+  .cat-list p{display:grid;grid-template-columns:5.2em 2.6em 1fr;break-inside:avoid}
+  .cat-list p b{white-space:nowrap}
+  .cat-colophon{margin-top:.3in;max-width:52ch!important;color:#767676}
+
+  /* one work, as big as the sheet allows */
+  .cat-single{height:9.65in;display:flex;flex-direction:column}
+  .cat-single>.plate-frame{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+  .cat-single-caption{display:flex;justify-content:space-between;align-items:flex-end;gap:12pt;border-top:.5pt solid #000;padding-top:7pt;margin-top:.3in}
+  .cat-single-caption h1{font-size:14pt;font-weight:300;margin-bottom:3pt;text-transform:none}
+  .cat-where{text-align:right}
+  .cat-alike{margin:.3in 0 .25in}
+  .cat-alike h2{font-size:6.5pt;font-weight:500;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6pt}
+  .cat-near{display:grid;grid-template-columns:repeat(6,1fr);gap:.14in}
+  .cat-near-frame{height:.8in;display:flex;align-items:flex-end}
+  .cat-near figcaption{font-size:6pt;margin-top:3pt}
+}
